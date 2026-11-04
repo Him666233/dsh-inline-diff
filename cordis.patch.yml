@@ -1,0 +1,6 @@
+# dsh-inline-diff: inserts the Host half (snapshot capture + fenced file read API).
+# The browser half is loaded from the `dsh.client` section of package.json.
+- insert:
+    - id: dsh-inline-diff
+      name: '@local/dsh-inline-diff'
+      config: {}
