@@ -1,0 +1,25 @@
+{
+  "name": "dsh-inline-diff-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check",
+    "test": "node --test tests/diff.test.mjs tests/read-range.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "version": "1.0.0",
+  "description": "Build workspace for the DSH Inline Diff plugin.",
+  "author": {
+    "name": "Him666233",
+    "url": "https://github.com/Him666233"
+  },
+  "homepage": "https://github.com/Him666233/dsh-inline-diff#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Him666233/dsh-inline-diff.git"
+  },
+  "license": "MIT"
+}
