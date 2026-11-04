@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Inline Diff",
-    "description": "Sees every code edit where it happens: inline per-edit diff cards with added/removed lines, exact old/new line numbers, hunk separators, moved-line and line-shift notes, plus an expandable side-by-side before/after viewer. The stock end-of-turn changed-files summary is kept."
-  }
-}
