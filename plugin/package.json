@@ -1,8 +1,8 @@
 {
   "name": "@local/dsh-inline-diff",
-  "version": "1.0.0",
+  "version": "1.2.6",
   "private": true,
-  "description": "Inline diff cards for DSH Web: per-edit diffs, expanded tool/command rows, read ranges, and a side-by-side viewer. Works in desktop and Web UI profiles.",
+  "description": "Inline diff cards for DSH: per-edit diffs, automatic file-language detection with syntax highlighting (red/green-safe palette), expanded command/generic/search/web rows, read ranges, and a side-by-side viewer. Works in desktop and Web UI profiles.",
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -50,7 +50,9 @@
     "deepseek-harness",
     "diff",
     "inline-diff",
-    "plugin"
+    "plugin",
+    "syntax-highlighting",
+    "language-detection"
   ],
   "engines": {
     "dsh": ">=0.2.2-rc.1 <0.3.0"

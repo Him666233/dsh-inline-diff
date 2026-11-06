@@ -29,7 +29,11 @@ export const FULL_VIEW_ROW_CAP = 4000
 export function contentLines(text) {
   if (typeof text !== 'string' || text === '') return []
   const body = text.endsWith('\n') ? text.slice(0, -1) : text
-  return body.split('\n')
+  // Files written on Windows keep `\r` at the end of every line. Meta diffs are
+  // stored with LF only, so leaving the carriage returns in place made the
+  // history-replay line-number locator miss every CRLF file. Normalizing here is
+  // display-only and keeps both sides of a snapshot comparison consistent.
+  return body.split('\n').map(line => (line.endsWith('\r') ? line.slice(0, -1) : line))
 }
 
 /** One aligned row; `oldNo`/`newNo` are 1-based when known. */
@@ -280,6 +284,69 @@ function segmentsFromFlags(tokens, flags) {
 }
 
 /**
+ * A token that carries no content of its own: whitespace or punctuation.
+ * A word/identifier/number/CJK token (`[\p{L}\p{N}_$]`) is content, not a gap.
+ */
+function isGapToken(token) {
+  if (typeof token !== 'string' || token === '') return false
+  return !/[\p{L}\p{N}_$]/u.test(token)
+}
+
+/**
+ * A changed run made only of gap tokens (whitespace/punctuation) sitting
+ * between two *unchanged* content tokens is alignment noise, not a real edit:
+ * token matching on repeated single-character tokens can flag a shared space,
+ * comma or hyphen even though both lines contain exactly that character. Drop
+ * those runs so the intra-line highlight only shows meaningful changed content
+ * instead of scattered specks that read like block-move markers.
+ */
+function calmGapRuns(tokens, flags) {
+  let i = 0
+  while (i < tokens.length) {
+    if (flags[i] !== 1 || !isGapToken(tokens[i])) {
+      i++
+      continue
+    }
+    const start = i
+    while (i < tokens.length && flags[i] === 1 && isGapToken(tokens[i])) i++
+    // A run that touches changed content (before or after) belongs to a real
+    // edit; only a fully isolated run between unchanged content is demoted.
+    const touchesChangedContent = (start > 0 && flags[start - 1] === 1)
+      || (i < tokens.length && flags[i] === 1)
+    if (!touchesChangedContent) {
+      for (let k = start; k < i; k++) flags[k] = 0
+    }
+  }
+  return flags
+}
+
+/**
+ * Merge an unchanged run of gap tokens (whitespace/punctuation) only when two
+ * changed content tokens sit on both sides of it: that run is inside one
+ * replaced expression, so it belongs to one continuous highlight band. A gap
+ * that merely separates two independent edits is left alone — otherwise every
+ * space and comma between them would light up as a stray fragment. Genuinely
+ * shared words also keep their own edits apart.
+ */
+function absorbGapTokens(tokens, flags) {
+  let i = 0
+  while (i < tokens.length) {
+    if (flags[i] === 1 || !isGapToken(tokens[i])) {
+      i++
+      continue
+    }
+    const start = i
+    while (i < tokens.length && flags[i] === 0 && isGapToken(tokens[i])) i++
+    const boundedByChanged = start > 0 && flags[start - 1] === 1
+      && i < tokens.length && flags[i] === 1
+    if (boundedByChanged) {
+      for (let k = start; k < i; k++) flags[k] = 1
+    }
+  }
+  return flags
+}
+
+/**
  * Word/character-level comparison of one replaced line pair. Returns the two
  * sides as segment arrays, or null when the line is too large to compare
  * cheaply (the caller then keeps plain line-level coloring).
@@ -349,8 +416,8 @@ export function lineSegments(oldText, newText, budget = null) {
     for (let j = prefix; j < bEnd; j++) newFlags[j] = 1
   }
   return {
-    old: segmentsFromFlags(a, oldFlags),
-    new: segmentsFromFlags(b, newFlags),
+    old: segmentsFromFlags(a, absorbGapTokens(a, calmGapRuns(a, oldFlags))),
+    new: segmentsFromFlags(b, absorbGapTokens(b, calmGapRuns(b, newFlags))),
   }
 }
 
@@ -389,8 +456,20 @@ export function annotateIntraLine(rows) {
 
 /** Moved-block inference: identical contiguous runs across the change sets. */
 const MOVE_MIN_LINES = 2
-const MOVE_SINGLE_MIN_CHARS = 12
+const MOVE_SINGLE_MIN_WIDTH = 12
 const MOVE_MAX_LINES = 120
+
+/** Visual width of one line in terminal cells (CJK / full-width = 2 cells). */
+function displayWidth(text) {
+  let width = 0
+  for (const char of text) {
+    const code = char.codePointAt(0)
+    width += (code >= 0x2e80 && code <= 0x9fff) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xff00 && code <= 0xffef)
+      ? 2
+      : 1
+  }
+  return width
+}
 
 /** Trim blank lines from both edges; returns the core text and its offset. */
 function trimBlankEdges(lines) {
@@ -403,7 +482,10 @@ function trimBlankEdges(lines) {
 
 function runIsSignificant(lines) {
   if (lines.length >= MOVE_MIN_LINES && lines.some(text => text.trim() !== '')) return true
-  if (lines.length === 1 && lines[0].trim().length >= MOVE_SINGLE_MIN_CHARS) return true
+  // One-line moves use display width, not UTF-16 length: a 6-character Chinese
+  // line is as substantial as a 12-character ASCII line, and both should get
+  // the move hint so the annotation does not look arbitrary in Chinese files.
+  if (lines.length === 1 && displayWidth(lines[0].trim()) >= MOVE_SINGLE_MIN_WIDTH) return true
   return false
 }
 
@@ -495,6 +577,28 @@ export function hunkTotals(hunks) {
     removed += hunk.removed
   }
   return { added, removed }
+}
+
+/**
+ * Which line-number gutters a hunk actually fills. A brand-new file only has
+ * new numbers and a deletion-only hunk (e.g. the file emptied) only old ones;
+ * hunks that contain context rows carry both numbers even if all changes are on
+ * one side, so "old / new" stays meaningful there. The inline gutter legend
+ * uses this to avoid labelling a column the rows never fill.
+ * @param {object} hunk - hunk produced by diffText / diffFromMeta.
+ * @returns {{old: boolean, new: boolean}} whether each gutter has line numbers.
+ */
+export function gutterSides(hunk) {
+  const rows = hunk === null || hunk === undefined ? null : hunk.rows
+  if (!Array.isArray(rows)) return { old: false, new: false }
+  let hasOld = false
+  let hasNew = false
+  for (const row of rows) {
+    if (!hasOld && row.oldNo !== null && row.oldNo !== undefined) hasOld = true
+    if (!hasNew && row.newNo !== null && row.newNo !== undefined) hasNew = true
+    if (hasOld && hasNew) break
+  }
+  return { old: hasOld, new: hasNew }
 }
 
 /**

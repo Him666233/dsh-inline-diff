@@ -3,8 +3,9 @@
  * a body-level modal reusing the same panel. All controls only change display
  * preferences; no session data or tool behavior is affected.
  */
-import { Fragment, useEffect, useState, useSyncExternalStore } from 'react'
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
+import { supportedLanguages } from './languages.js'
 import { AUTHOR, AUTHOR_URL, REPO_URL, VERSION } from './project.js'
 import {
   currentTranscriptMode,
@@ -46,6 +47,20 @@ function useSettings() {
   return useSyncExternalStore(subscribeSettings, getSettings, getSettings)
 }
 
+/** The recognizer's registry: resolved once, and a missing list never breaks settings. */
+let languagesCache
+function supportedLanguageList() {
+  if (languagesCache === undefined) {
+    try {
+      const list = supportedLanguages()
+      languagesCache = Array.isArray(list) ? list : []
+    } catch {
+      languagesCache = []
+    }
+  }
+  return languagesCache
+}
+
 /** Two-or-three-way segmented selector styled with host theme tokens. */
 function Segmented({ ariaLabel, value, options, disabled, onChange }) {
   return (
@@ -68,6 +83,37 @@ function Segmented({ ariaLabel, value, options, disabled, onChange }) {
   )
 }
 
+/** Compact native select used by the per-card shell/inner tone controls. */
+function ToneSelect({ label, value, options, onChange }) {
+  return (
+    <label className="did-tone">
+      <span className="did-tone-label">{label}</span>
+      <select className="did-select" value={value} onChange={event => onChange(event.target.value)}>
+        {options.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function shellToneOptions(t) {
+  return [
+    { value: 'auto', label: t('settings.toneAutoShell') },
+    { value: 'light', label: t('settings.toneLight') },
+    { value: 'dark', label: t('settings.toneDark') },
+  ]
+}
+
+function innerToneOptions(t) {
+  return [
+    { value: 'auto', label: t('settings.toneAutoInner') },
+    { value: 'light', label: t('settings.toneLight') },
+    { value: 'dark', label: t('settings.toneDark') },
+    { value: 'same', label: t('settings.toneSameShell') },
+  ]
+}
+
 /** Sliders icon for the sidebar-foot launcher. */
 function SlidersIcon({ size = 15 }) {
   return (
@@ -86,21 +132,66 @@ function SlidersIcon({ size = 15 }) {
 }
 
 /** One labeled setting row with a segmented control. */
-function SettingRow({ label, description, children }) {
+function SettingRow({ label, description, children, extra }) {
   return (
     <div className="did-setting">
       <div className="did-setting-text">
         <div className="did-setting-label">{label}</div>
         <div className="did-setting-desc">{description}</div>
+        {extra === undefined ? null : extra}
       </div>
       <div className="did-setting-control">{children}</div>
     </div>
   )
 }
 
+/** Close button shared by the inline settings head and the modal banner. */
+function SettingsCloseButton({ onClose, t }) {
+  return (
+    <button type="button" className="did-settings-close" onClick={onClose} aria-label={t('close')} title={t('close')}>
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+        <path d="m3.5 3.5 9 9m0-9-9 9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </svg>
+    </button>
+  )
+}
+
+/**
+ * Collapsible list of every language the recognizer knows. The badge spans are
+ * only mounted while the details element is open, so the settings page stays
+ * light; the look is the same `.did-lang` badge used in the card header.
+ */
+function SupportedLanguages({ t, languages }) {
+  const [open, setOpen] = useState(false)
+  const detailsRef = useRef(null)
+
+  useEffect(() => {
+    const node = detailsRef.current
+    if (node === null) return undefined
+    const onToggle = () => setOpen(node.open)
+    setOpen(node.open)
+    node.addEventListener('toggle', onToggle)
+    return () => node.removeEventListener('toggle', onToggle)
+  }, [])
+
+  return (
+    <details className="did-langs-details" ref={detailsRef}>
+      <summary>{t('settings.supportedLanguages')} ({languages.length})</summary>
+      {open ? (
+        <div className="did-langs">
+          {languages.map(language => (
+            <span className="did-lang" data-variant="full" key={language.id}>{language.label}</span>
+          ))}
+        </div>
+      ) : null}
+    </details>
+  )
+}
+
 /** The shared settings panel body. */
 function SettingsPanel({ t, onClose }) {
   const settings = useSettings()
+  const languageList = supportedLanguageList()
   const [dsmMode, setDsmMode] = useState(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -148,17 +239,17 @@ function SettingsPanel({ t, onClose }) {
           <div className="did-settings-title">{t('settings.title')}</div>
           <div className="did-settings-sub">{t('settings.description')}</div>
         </div>
-        {onClose === undefined ? null : (
-          <button type="button" className="did-settings-close" onClick={onClose} aria-label={t('close')} title={t('close')}>
-            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
-              <path d="m3.5 3.5 9 9m0-9-9 9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
-          </button>
-        )}
+        {onClose === undefined ? null : <SettingsCloseButton onClose={onClose} t={t} />}
       </div>
 
       <div className="did-settings-body">
-        <SettingRow label={t('settings.fileCards')} description={t('settings.fileCardsDesc')}>
+        <SettingRow label={t('settings.fileCards')} description={t('settings.fileCardsDesc')}           extra={
+            <div className="did-tones">
+              <ToneSelect label={t('settings.shellTone')} value={settings.fileShellTone} onChange={value => updateSettings({ fileShellTone: value })} options={shellToneOptions(t)} />
+              <ToneSelect label={t('settings.innerTone')} value={settings.fileInnerTone} onChange={value => updateSettings({ fileInnerTone: value })} options={innerToneOptions(t)} />
+            </div>
+          }
+>
           <Segmented
             ariaLabel={t('settings.fileCards')}
             value={settings.fileCards}
@@ -170,7 +261,71 @@ function SettingsPanel({ t, onClose }) {
           />
         </SettingRow>
 
-        <SettingRow label={t('settings.shellRows')} description={t('settings.shellRowsDesc')}>
+        <SettingRow
+          label={t('settings.syntax')}
+          description={t('settings.syntaxDesc')}
+          extra={<div className="did-setting-desc">{t('settings.syntaxToggleNote')}</div>}
+        >
+          <Segmented
+            ariaLabel={t('settings.syntax')}
+            value={settings.syntaxHighlight === false ? 'off' : 'on'}
+            onChange={value => updateSettings({ syntaxHighlight: value === 'on' })}
+            options={[
+              { value: 'on', label: t('settings.syntaxOn') },
+              { value: 'off', label: t('settings.syntaxOff') },
+            ]}
+          />
+        </SettingRow>
+
+        <SettingRow label={t('settings.languageBadge')} description={t('settings.languageBadgeDesc')}>
+          <Segmented
+            ariaLabel={t('settings.languageBadge')}
+            value={settings.languageBadge}
+            onChange={value => updateSettings({ languageBadge: value })}
+            options={[
+              { value: 'short', label: t('settings.badgeShort') },
+              { value: 'full', label: t('settings.badgeFull') },
+              { value: 'hidden', label: t('settings.badgeHidden') },
+            ]}
+          />
+        </SettingRow>
+
+        <SettingRow label={t('settings.unknownLanguage')} description={t('settings.unknownLanguageDesc')}>
+          <Segmented
+            ariaLabel={t('settings.unknownLanguage')}
+            value={settings.unknownLanguage}
+            onChange={value => updateSettings({ unknownLanguage: value })}
+            options={[
+              { value: 'show', label: t('settings.unknownShow') },
+              { value: 'hidden', label: t('settings.unknownHidden') },
+            ]}
+          />
+        </SettingRow>
+
+        <SettingRow label={t('settings.syntaxEmphasis')} description={t('settings.syntaxEmphasisDesc')}>
+          <Segmented
+            ariaLabel={t('settings.syntaxEmphasis')}
+            value={settings.syntaxEmphasis}
+            onChange={value => updateSettings({ syntaxEmphasis: value })}
+            options={[
+              { value: 'on', label: t('settings.emphasisOn') },
+              { value: 'off', label: t('settings.emphasisOff') },
+            ]}
+          />
+        </SettingRow>
+
+        <div className="did-settings-note">
+          <div>{t('settings.supportedLanguagesNote', { n: languageList.length })}</div>
+          <SupportedLanguages t={t} languages={languageList} />
+        </div>
+
+        <SettingRow label={t('settings.shellRows')} description={t('settings.shellRowsDesc')}           extra={
+            <div className="did-tones">
+              <ToneSelect label={t('settings.shellTone')} value={settings.shellShellTone} onChange={value => updateSettings({ shellShellTone: value })} options={shellToneOptions(t)} />
+              <ToneSelect label={t('settings.innerTone')} value={settings.shellInnerTone} onChange={value => updateSettings({ shellInnerTone: value })} options={innerToneOptions(t)} />
+            </div>
+          }
+>
           <Segmented
             ariaLabel={t('settings.shellRows')}
             value={settings.shellRows}
@@ -182,7 +337,13 @@ function SettingsPanel({ t, onClose }) {
           />
         </SettingRow>
 
-        <SettingRow label={t('settings.toolCalls')} description={t('settings.toolCallsDesc')}>
+        <SettingRow label={t('settings.toolCalls')} description={t('settings.toolCallsDesc')}           extra={
+            <div className="did-tones">
+              <ToneSelect label={t('settings.shellTone')} value={settings.toolShellTone} onChange={value => updateSettings({ toolShellTone: value })} options={shellToneOptions(t)} />
+              <ToneSelect label={t('settings.innerTone')} value={settings.toolInnerTone} onChange={value => updateSettings({ toolInnerTone: value })} options={innerToneOptions(t)} />
+            </div>
+          }
+>
           <Segmented
             ariaLabel={t('settings.toolCalls')}
             value={settings.toolCalls}
@@ -290,7 +451,19 @@ export function SettingsModal({ t }) {
     <Fragment>
       <div className="did-settings-overlay" onPointerDown={closeSettingsModal}>
         <div className="did-settings-dialog" role="dialog" aria-modal="true" aria-label={t('settings.title')} onPointerDown={event => event.stopPropagation()}>
-          <SettingsPanel t={t} onClose={closeSettingsModal} />
+          {/* Fixed banner: title, description and the close button never scroll;
+              the body below owns the scrollbar, which therefore starts under
+              the banner instead of running past it. */}
+          <div className="did-settings-banner">
+            <div className="did-settings-headtext">
+              <div className="did-settings-title">{t('settings.title')}</div>
+              <div className="did-settings-sub">{t('settings.description')}</div>
+            </div>
+            <SettingsCloseButton onClose={closeSettingsModal} t={t} />
+          </div>
+          <div className="did-settings-scroll">
+            <SettingsPanel t={t} onClose={closeSettingsModal} />
+          </div>
         </div>
       </div>
     </Fragment>

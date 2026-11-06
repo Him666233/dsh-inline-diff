@@ -1,30 +1,16 @@
 /**
- * Optional enhanced flat tool-call transcript.
+ * Optional enhanced flat tool-call rows.
  *
- * When enabled, this shadows the shipped `tool-call` Chat node with a wrapper
- * that keeps the SAME keyed child dispatch (`tool.call.toolview`): every tool
- * that has a dedicated view — including this plugin's diff cards and flat
- * command rows — still renders its own presentation. Only tools without a
- * keyed view fall back to this plugin's expanded IN/OUT card, which is the
- * "show what was sent and what came back without unfolding" behaviour.
- *
- * When disabled the plugin registers nothing at this node key and the shipped
- * tree returns unchanged.
+ * These keyed `tool.call.toolview` views take over the search/web/generic tool
+ * calls registered by index.jsx when the user enables the expanded style: each
+ * call renders a flat IN/OUT card that shows what was sent and what came back
+ * without unfolding. Commands have their own `enhanced-shell.jsx` row; tools
+ * without a registered key keep the shipped DSH presentation.
  */
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useMemo, useState, useSyncExternalStore } from 'react'
 import { deriveCall } from './model.js'
 import { getSettings, subscribeSettings } from './settings.js'
-
-/** Mirrors the owner's call-stage discriminator. */
-function toolCallPhase(block) {
-  if ('kind' in block) return { phase: 'result', block }
-  return block.phase === 'preparing' ? { phase: 'preparing', block } : { phase: 'start', block }
-}
-
-/** The wire tool name at any stage. */
-function callName(call) {
-  return call.phase === 'result' ? call.block.call?.name ?? '' : call.block.name
-}
+import { sectionStates } from './tool-status.js'
 
 /** Humanize one wire tool name for the flat row title. */
 function toolLabel(name, t) {
@@ -50,15 +36,69 @@ function wireName(name, t) {
   return name
 }
 
-/** Build a one-line summary from the most descriptive argument. */
-function summaryOf(args) {
+/** Clamp one summary line. */
+function clampSummary(text) {
+  const first = typeof text === 'string' ? text.split('\n')[0].trim() : ''
+  return first.length > 120 ? first.slice(0, 120) + '…' : first
+}
+
+/** Join a few search terms into one readable summary line. */
+function searchSummary(call) {
+  const args = call.args
   if (args === null || typeof args !== 'object') return ''
-  const keys = ['description', 'command', 'file_path', 'path', 'pattern', 'url', 'query', 'prompt', 'objective', 'skill', 'title', 'name', 'tool']
+  if (call.name === 'grep' || call.name === 'glob') {
+    const pattern = typeof args.pattern === 'string' ? args.pattern : ''
+    const path = typeof args.path === 'string' ? args.path : ''
+    const include = call.name === 'grep' && typeof args.include === 'string' ? args.include : ''
+    return clampSummary([pattern, path, include].filter(part => part.trim() !== '').join('  ·  '))
+  }
+  if (call.name === 'web_search') {
+    const queries = Array.isArray(args.queries)
+      ? args.queries.filter(query => typeof query === 'string' && query.trim() !== '')
+      : []
+    return clampSummary(queries.join('  ·  '))
+  }
+  if (call.name === 'web_fetch') {
+    return clampSummary(typeof args.url === 'string' ? args.url : '')
+  }
+  return ''
+}
+
+/** Build a one-line summary from the most descriptive argument. */
+function summaryOf(args, call) {
+  if (args === null || typeof args !== 'object') return ''
+  const specific = call === undefined ? '' : searchSummary(call)
+  if (specific !== '') return specific
+  const keys = ['description', 'command', 'file_path', 'path', 'url', 'query', 'queries', 'prompt', 'objective', 'skill', 'title', 'name', 'tool']
   for (const key of keys) {
     const value = args[key]
+    if (Array.isArray(value)) {
+      const joined = value.filter(item => typeof item === 'string' && item.trim() !== '').join('  ·  ')
+      if (joined !== '') return clampSummary(joined)
+      continue
+    }
     if (typeof value !== 'string' || value.trim() === '') continue
-    const first = value.split('\n')[0].trim()
-    return first.length > 120 ? first.slice(0, 120) + '…' : first
+    return clampSummary(value)
+  }
+  return ''
+}
+
+/** A compact settled-count badge derived from persisted tool metadata. */
+function badgeOf(call, t) {
+  if (!call.settled) return ''
+  const meta = call.meta
+  if (meta === null || typeof meta !== 'object') return ''
+  if (call.name === 'grep' && typeof meta.total === 'number' && Number.isFinite(meta.total)) {
+    return t('search.matches', { n: meta.total }) + (meta.truncated === true ? '+' : '')
+  }
+  if (call.name === 'glob' && Array.isArray(meta.paths)) {
+    return t('search.files', { n: meta.paths.length })
+  }
+  if (call.name === 'web_search' && Array.isArray(meta.sources)) {
+    return t('web.sources', { n: meta.sources.length })
+  }
+  if (call.name === 'web_fetch' && typeof meta.statusCode === 'number' && Number.isFinite(meta.statusCode)) {
+    return t('web.status', { code: meta.statusCode })
   }
   return ''
 }
@@ -92,6 +132,14 @@ function outputText(call) {
   return parts.join('\n')
 }
 
+/** Category drives the small glyph and the row accent. */
+function kindOf(toolName) {
+  if (SHELL_KEYS.has(toolName)) return 'command'
+  if (toolName === 'grep' || toolName === 'glob') return 'search'
+  if (toolName === 'web_search' || toolName === 'web_fetch') return 'web'
+  return 'tool'
+}
+
 /** State + copy for one expanded generic tool call. */
 function genericModel(block, toolName, t) {
   const call = deriveCall(block)
@@ -99,13 +147,24 @@ function genericModel(block, toolName, t) {
   const state = !call.settled
     ? (call.phase === 'preparing' ? 'preparing' : 'running')
     : stopped ? 'stopped' : call.isError ? 'error' : 'ok'
+  // IN/OUT carry their own status: a rejected call is an input failure even
+  // when the output side never ran.
+  const sections = sectionStates(call)
+  const resolvedName = call.name !== '' ? call.name : toolName
   return {
-    title: toolLabel(call.name !== '' ? call.name : toolName, t),
-    displayName: wireName(call.name !== '' ? call.name : toolName, t),
-    summary: summaryOf(call.args),
+    title: toolLabel(resolvedName, t),
+    displayName: wireName(resolvedName, t),
+    summary: summaryOf(call.args, call),
+    badge: badgeOf(call, t),
+    kind: kindOf(resolvedName),
     input: inputText(call),
     output: call.settled ? outputText(call) : '',
     state,
+    inputState: sections.input,
+    outputState: sections.output,
+    // "Input accepted, output pending": show an OUT placeholder so its own
+    // brand-colored, pulsing bar is visible while the tool runs.
+    waitingForOutput: call.settled !== true && call.phase !== 'preparing',
   }
 }
 
@@ -123,14 +182,15 @@ function statusKey(state) {
  * long transcript can be folded manually.
  */
 export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
+  const tone = useDisplaySettings()
   const model = useMemo(() => genericModel(block, toolName, t), [block, toolName, t])
   const [open, setOpen] = useState(true)
   const stateLabel = statusKey(model.state)
   const hasBody = model.input !== '' || model.output !== ''
   return (
-    <div className="enhanced-tool enhanced-generic" data-variant="tool" data-state={model.state} data-tool={toolName}>
+    <div className="enhanced-tool enhanced-generic" data-variant="tool" data-kind={model.kind} data-state={model.state} data-tool={toolName} data-shell-tone={tone.toolShellTone} data-inner-tone={tone.toolInnerTone} data-body={hasBody && open ? 'true' : 'false'}>
       <div className="enhanced-head">
-        <span className="enhanced-kind"><KindIcon kind="tool" /></span>
+        <span className="enhanced-kind"><KindIcon kind={model.kind} /></span>
         {hasBody ? (
           <button
             type="button"
@@ -148,35 +208,41 @@ export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
         )}
         <span className="enhanced-dot" aria-hidden="true" />
         <span className="enhanced-tag">{t('tool.fallbackTitle')}</span>
-        <span className="enhanced-sep" aria-hidden="true">·</span>
         <span className="enhanced-name">{model.displayName}</span>
         {model.summary !== '' ? <span className="enhanced-summary" title={model.summary}>{model.summary}</span> : null}
-        {stateLabel !== null ? <span className="enhanced-state">{t(stateLabel)}</span> : null}
-        <InspectButton inspect={inspect} t={t} />
+        {model.badge !== '' ? <span className="enhanced-badge">{model.badge}</span> : null}
+        <span className="enhanced-actions">
+          {stateLabel !== null ? <span className="enhanced-state">{t(stateLabel)}</span> : null}
+          <InspectButton inspect={inspect} t={t} />
+        </span>
       </div>
       {open && hasBody ? (
         <div className="enhanced-io">
           {model.input !== '' ? (
-            <div className="enhanced-section">
+            <div className="enhanced-section" data-section="in" data-state={model.inputState}>
               <span className="enhanced-label">{t('tool.in')}</span>
               <div className="enhanced-scroll enhanced-scroll-in">
-                <pre className="enhanced-code">{model.input}</pre>
+                <pre className="enhanced-code" data-error={model.inputState === 'error' ? '' : undefined}>{model.input}</pre>
               </div>
             </div>
           ) : null}
           {model.input !== '' && model.output !== '' ? <div className="enhanced-divider" aria-hidden="true" /> : null}
           {model.output !== '' ? (
-            <div className="enhanced-section">
+            <div className="enhanced-section" data-section="out" data-state={model.outputState}>
               <span className="enhanced-label">{t('tool.out')}</span>
               <div className="enhanced-scroll">
-                <pre className="enhanced-code" data-error={model.state === 'error' ? '' : undefined}>{model.output}</pre>
+                <pre className="enhanced-code" data-error={model.outputState === 'error' ? '' : undefined}>{model.output}</pre>
+              </div>
+            </div>
+          ) : model.waitingForOutput ? (
+            <div className="enhanced-section" data-section="out" data-state={model.outputState}>
+              <span className="enhanced-label">{t('tool.out')}</span>
+              <div className="enhanced-scroll">
+                <pre className="enhanced-code" data-placeholder="true">{t('state.running')}…</pre>
               </div>
             </div>
           ) : null}
         </div>
-      ) : null}
-      {model.state === 'running' || model.state === 'preparing' ? (
-        <div className="enhanced-empty">{t(statusKey(model.state))}…</div>
       ) : null}
     </div>
   )
@@ -188,11 +254,12 @@ export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
  * tasks, ...). They have keyed views, so the node fallback never sees them;
  * the tool-call style registers the same expanded IN/OUT card for these keys
  * when the user enables the enhanced-style tool-call option. Rich-result views
- * (Read, search, web, todo, question) stay native on purpose.
+ * (Read, todo, question, image) stay native on purpose.
  */
 export const ENHANCED_DETAILS_KEYS = [
   'create_goal', 'get_goal', 'update_goal',
-  'schedule_create', 'schedule_list', 'schedule_delete', 'schedule_update',
+  'schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit',
+  'schedule_delete', 'schedule_update',
   'cordis_inspect_list', 'cordis_inspect_query', 'cordis_inspect_self',
   'workflow', 'ralph',
   'session_event_read', 'session_event_search', 'session_event_trace',
@@ -205,55 +272,20 @@ export const ENHANCED_DETAILS_KEYS = [
   'team_task_create', 'team_task_get', 'team_task_update', 'team_task_list',
 ]
 
+/**
+ * File-content search and web tools ship rich stock cards. The enhanced style
+ * takes them over as well so one conversation does not mix flat IN/OUT rows
+ * with native disclosure cards; turning the option back to DSH native restores
+ * the stock cards unchanged.
+ */
+export const ENHANCED_SEARCH_WEB_KEYS = ['grep', 'glob', 'web_search', 'web_fetch']
+
 /** Command tools keep their native disclosure when the command-row option is native. */
 const SHELL_KEYS = new Set(['bash', 'pwsh', 'win_bash'])
 
-/** Live display settings for the always-mounted node renderer. */
+/** Live display settings for the keyed enhanced rows. */
 function useDisplaySettings() {
   return useSyncExternalStore(subscribeSettings, getSettings, getSettings)
-}
-
-/** Native-like collapsed disclosure used when the enhanced option is off. */
-function NativeCompactTool({ block, toolName, t, variant = 'generic', inspect }) {
-  const call = deriveCall(block)
-  const [open, setOpen] = useState(false)
-  const model = genericModel(block, toolName, t)
-  const state = model.state
-  const title = variant === 'shell'
-    ? toolLabel(call.name !== '' ? call.name : toolName, t)
-    : `${t('tool.fallbackTitle')} · ${wireName(call.name !== '' ? call.name : toolName, t)}`
-  return (
-    <div className="enhanced-native" data-variant={variant} data-state={state} data-tool={toolName}>
-      <div className="enhanced-native-headrow">
-        <button type="button" className="enhanced-native-head" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-          <span className="enhanced-native-chevron" data-open={open ? 'true' : 'false'} aria-hidden="true">
-            <svg viewBox="0 0 16 16" width="11" height="11" fill="none"><path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </span>
-          <span className="enhanced-name">{title}</span>
-          {model.summary !== '' ? <span className="enhanced-summary">{model.summary}</span> : null}
-          {state !== 'ok' ? <span className="enhanced-state">{t(state === 'error' ? 'state.error' : state === 'running' ? 'state.running' : state === 'preparing' ? 'state.preparing' : 'state.stopped')}</span> : null}
-        </button>
-        <InspectButton inspect={inspect} t={t} />
-      </div>
-      {open && (model.input !== '' || model.output !== '') ? (
-        <div className="enhanced-io">
-          {model.input !== '' ? (
-            <div className="enhanced-section">
-              <span className="enhanced-label">{t('tool.in')}</span>
-              <div className="enhanced-scroll enhanced-scroll-in"><pre className="enhanced-code">{model.input}</pre></div>
-            </div>
-          ) : null}
-          {model.input !== '' && model.output !== '' ? <div className="enhanced-divider" aria-hidden="true" /> : null}
-          {model.output !== '' ? (
-            <div className="enhanced-section">
-              <span className="enhanced-label">{t('tool.out')}</span>
-              <div className="enhanced-scroll"><pre className="enhanced-code" data-error={state === 'error' ? '' : undefined}>{model.output}</pre></div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  )
 }
 
 /**
@@ -279,12 +311,28 @@ export const ENHANCED_GENERIC_KEYS = [
   'task_board_github_link_pr', 'task_board_github_close_issue',
 ]
 
-/** Small terminal/tool glyphs so command rows and tool-call rows read differently. */
+/** Small category glyphs so command, search, web and generic rows read differently. */
 export function KindIcon({ kind }) {
   if (kind === 'command') {
     return (
       <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
         <path d="m3.5 5 3.2 3-3.2 3M8.5 11h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  if (kind === 'search') {
+    return (
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.2" stroke="currentColor" strokeWidth="1.3" />
+        <path d="m10.2 10.2 3.1 3.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (kind === 'web') {
+    return (
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.8" stroke="currentColor" strokeWidth="1.2" />
+        <path d="M2.4 8h11.2M8 2.2c1.7 1.7 2.5 3.6 2.5 5.8S9.7 12.1 8 13.8C6.3 12.1 5.5 10.2 5.5 8S6.3 3.9 8 2.2Z" stroke="currentColor" strokeWidth="1.1" />
       </svg>
     )
   }
@@ -295,7 +343,11 @@ export function KindIcon({ kind }) {
   )
 }
 
-/** Trajectory jump affordance shared by the enhanced-style rows. */
+/**
+ * Trajectory jump affordance shared by every enhanced-style row and diff card.
+ * A labeled pill (not a bare glyph) so the action is discoverable at a glance;
+ * it keeps the full "view in trajectory" wording in title/aria-label.
+ */
 export function InspectButton({ inspect, t }) {
   if (typeof inspect !== 'function') return null
   return (
@@ -305,78 +357,14 @@ export function InspectButton({ inspect, t }) {
       title={t('inspectTrajectory')}
       aria-label={t('inspectTrajectory')}
       onClick={event => { event.stopPropagation(); inspect() }}
+      onKeyDown={event => event.stopPropagation()}
     >
-      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
-        <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Zm2.3 3.7-1.6 3.9-3.9 1.6 1.6-3.9 3.9-1.6Z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
+      <svg viewBox="0 0 16 16" width="11" height="11" fill="none" aria-hidden="true">
+        <path d="M9.2 2.2h4.6v4.6M13.8 2.2 8.1 7.9" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M11.6 9.3v3.6a.9.9 0 0 1-.9.9H3.1a.9.9 0 0 1-.9-.9V5.3a.9.9 0 0 1 .9-.9h3.6" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
       </svg>
+      <span className="enhanced-inspect-label">{t('inspectShort')}</span>
     </button>
   )
 }
 
-/** One call plus its nested sub-calls. */
-function ToolBranch({ renderSlot, block, cwd, openFile, inspectCall, loadImage, useDisclosure, t }) {
-  const call = useMemo(() => toolCallPhase(block), [block])
-  const callId = call.block.callId
-  const toolName = callName(call)
-  const owner = useMemo(() => ({
-    callId,
-    toolName,
-    ...call,
-    openFile,
-    cwd,
-    home: undefined,
-    loadImage,
-    useDisclosure,
-    inspect: typeof inspectCall === 'function' ? () => inspectCall(callId) : undefined,
-  }), [callId, toolName, call, openFile, cwd, loadImage, useDisclosure, inspectCall])
-  const settings = useDisplaySettings()
-  const shellTool = SHELL_KEYS.has(toolName)
-  const inspect = owner.inspect
-  const fallback = shellTool && settings.shellRows === 'native'
-    ? <NativeCompactTool block={call.block} toolName={toolName} t={t} variant="shell" inspect={inspect} />
-    : settings.toolCalls === 'enhanced'
-      ? <EnhancedExpandedTool block={call.block} phase={call.phase} toolName={toolName} t={t} inspect={inspect} />
-      : <NativeCompactTool block={call.block} toolName={toolName} t={t} inspect={inspect} />
-  const rendered = typeof renderSlot === 'function'
-    ? renderSlot('tool.call.toolview', owner, { entryKey: toolName, fallback })
-    : fallback
-  const showSubCalls = call.phase !== 'preparing' && Array.isArray(call.block.subCalls) && call.block.subCalls.length > 0
-  return (
-    <div className="enhanced-call-row" data-chat-anchor-key={`call:${callId}`} data-chat-call-id={callId}>
-      {rendered}
-      {showSubCalls ? (
-        <div className="enhanced-subcalls" data-subcalls="true">
-          {call.block.subCalls.map(child => (
-            <ToolBranch
-              key={child.callId}
-              renderSlot={renderSlot}
-              block={child}
-              cwd={cwd}
-              openFile={openFile}
-              inspectCall={inspectCall}
-              loadImage={loadImage}
-              useDisclosure={useDisclosure}
-              t={t}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-/** Replacement `conversation.chat.node` renderer for the `tool-call` kind. */
-export function EnhancedToolCallTree({ renderSlot, node, cwd, openFile, inspectCall, loadImage, useDisclosure, t }) {
-  return (
-    <ToolBranch
-      renderSlot={renderSlot}
-      block={node.data.root}
-      cwd={cwd}
-      openFile={openFile}
-      inspectCall={inspectCall}
-      loadImage={loadImage}
-      useDisclosure={useDisclosure}
-      t={t}
-    />
-  )
-}

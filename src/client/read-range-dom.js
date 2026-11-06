@@ -66,6 +66,13 @@ function syncReadRow(row, t) {
   if (chip.hidden !== expanded) chip.hidden = expanded
 }
 
+/** Whether one mutated node is (or contains) a Read row worth scanning. */
+function isReadRelevant(node) {
+  if (node === null || node === undefined || node.nodeType !== 1) return false
+  if (typeof node.matches === 'function' && node.matches('[data-tool="read"]')) return true
+  return typeof node.querySelector === 'function' && node.querySelector('[data-tool="read"]') !== null
+}
+
 /** Watch the transcript and keep every Read row's chip in sync. */
 export function startReadRangeChips(t) {
   if (typeof document === 'undefined' || typeof MutationObserver !== 'function') return () => {}
@@ -83,8 +90,38 @@ export function startReadRangeChips(t) {
       ? requestAnimationFrame(scan)
       : setTimeout(scan, 16)
   }
-  scan()
-  const observer = new MutationObserver(schedule)
+  // Third-party boot/splash plugins (e.g. 550C) animate a full-screen overlay
+  // for several seconds right after mount. Starting the page-wide observer and
+  // its first scan in that window only adds main-thread work behind a cover the
+  // user cannot see; defer one frame without delaying the visible transcript.
+  schedule()
+  // Only Read-row churn can change a chip. Filtering here matters on long,
+  // streaming conversations and while another plugin is animating: unrelated
+  // DOM mutations no longer wake a whole-document query.
+  const observer = new MutationObserver(records => {
+    for (const record of records) {
+      if (record.type === 'attributes') {
+        const row = typeof record.target.closest === 'function' ? record.target.closest('[data-tool="read"]') : null
+        if (row !== null) {
+          schedule()
+          return
+        }
+        continue
+      }
+      for (const node of record.addedNodes) {
+        if (isReadRelevant(node)) {
+          schedule()
+          return
+        }
+      }
+      for (const node of record.removedNodes) {
+        if (isReadRelevant(node)) {
+          schedule()
+          return
+        }
+      }
+    }
+  })
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded'] })
   return () => {
     observer.disconnect()

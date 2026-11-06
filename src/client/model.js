@@ -98,7 +98,7 @@ export function operationKey(operation) {
 }
 
 /** Snapshot or meta operation, normalized. */
-function resolveOperation(snapshot, call, diff) {
+function resolveOperation(snapshot, call, toolName) {
   if (snapshot !== null && snapshot !== undefined) {
     if (snapshot.operation === 'create' || snapshot.before === null) return 'create'
     return 'update'
@@ -106,10 +106,12 @@ function resolveOperation(snapshot, call, diff) {
   const metaOperation = call.meta !== null && typeof call.meta === 'object' ? call.meta.operation : undefined
   if (metaOperation === 'create') return 'create'
   if (metaOperation === 'update') return 'update'
-  if (diff !== undefined && diff !== null && diff.hunks.length > 0) {
-    const onlyAdds = diff.hunks.every(hunk => hunk.removed === 0)
-    if (onlyAdds) return 'create'
-  }
+  // A pure-addition edit adds lines to an existing file; do not mistake it for
+  // a new file. `meta.diffs` for a real creation carries `oldText: null`, and
+  // `str_replace_editor create` names the operation in its arguments.
+  if (toolName === 'str_replace_editor' && stringArg(call.args, 'command') === 'create') return 'create'
+  const diffs = call.meta !== null && typeof call.meta === 'object' && Array.isArray(call.meta.diffs) ? call.meta.diffs : []
+  if (diffs.length > 0 && diffs.every(diff => diff !== null && typeof diff === 'object' && diff.oldText === null)) return 'create'
   return 'update'
 }
 
@@ -167,7 +169,7 @@ export function buildCardModel({ block, toolName, cwd, home, snapshot, fileText,
     if (snapshot !== null && snapshot !== undefined && typeof snapshot.after === 'string') {
       const before = typeof snapshot.before === 'string' ? snapshot.before : null
       const after = snapshot.after
-      const operation = resolveOperation(snapshot, call, null)
+      const operation = resolveOperation(snapshot, call, resolvedToolName)
       if (before !== null && before === after) {
         return { ...base, status: 'nochange', operation, source: 'snapshot', diff: diffText(before, after) }
       }
@@ -215,14 +217,22 @@ export function buildCardModel({ block, toolName, cwd, home, snapshot, fileText,
     if (diffs !== null) {
       const lines = typeof fileText === 'string' ? contentLines(fileText) : null
       const located = diffFromMeta(diffs, lines)
+      const hasNumbers = located.hasNumbers === true
+      // `str_replace_editor` never produces a Host execution snapshot (only
+      // `edit` / `write` are captured), so its cards are not "history replay" —
+      // they simply cannot offer the full-file comparison. Use a dedicated
+      // notice instead of the replay wording used for lost snapshots.
+      const snapshotlessTool = resolvedToolName === 'str_replace_editor'
       return {
         ...base,
         status: 'ok',
-        operation: resolveOperation(null, call, located),
-        source: lines === null ? 'meta' : 'located',
+        operation: resolveOperation(null, call, resolvedToolName),
+        source: lines === null || !hasNumbers ? 'meta' : 'located',
         notice: lines === null
           ? (loading === true ? null : { kind: 'lines' })
-          : { kind: 'history' },
+          : snapshotlessTool
+            ? { kind: hasNumbers ? 'tool' : 'toolLocate' }
+            : hasNumbers ? { kind: 'history' } : { kind: 'locate' },
         diff: located,
       }
     }

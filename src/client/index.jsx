@@ -8,12 +8,18 @@
  * disposes the takeover and the shipped cells return.
  */
 import { EnhancedShellCard } from './enhanced-shell.jsx'
-import { ENHANCED_DETAILS_KEYS, ENHANCED_GENERIC_KEYS, EnhancedExpandedTool, EnhancedToolCallTree } from './enhanced-tools.jsx'
+import {
+  ENHANCED_DETAILS_KEYS,
+  ENHANCED_GENERIC_KEYS,
+  ENHANCED_SEARCH_WEB_KEYS,
+  EnhancedExpandedTool,
+} from './enhanced-tools.jsx'
 import { DiffModal, InlineDiffCard } from './components.jsx'
 import { dicts, NS } from './locales.js'
 import { MUTATION_TOOLS } from './model.js'
-import { getSettings, initSettings, subscribeSettings } from './settings.js'
+import { getSettings, initSettings, startAppearanceTracking, subscribeSettings } from './settings.js'
 import { CSS } from './styles.js'
+import { SYNTAX_CSS } from './syntax-styles.js'
 import { startReadRangeChips } from './read-range-dom.js'
 import { VERSION } from './project.js'
 import { SettingsLauncher, SettingsModal, SettingsSection } from './settings-ui.jsx'
@@ -25,6 +31,15 @@ export const inject = ['slots', 'locale', 'configForms']
 const INLINE_DIFF_KEYS = MUTATION_TOOLS
 /** Tool keys whose stock view the enhanced flat command row replaces. */
 const ENHANCED_SHELL_KEYS = ['bash', 'pwsh', 'win_bash']
+/**
+ * Priority for our keyed `tool.call.toolview` registrations. The official tool
+ * layer registers at the default priority (0); theme/companion plugins may also
+ * shadow tool views at -1. The slot registry rejects two registrations with the
+ * same key *and* priority, so we use a clearly lower value: our views render
+ * (lowest priority renders) and a theme plugin registering at -1 no longer
+ * crashes either side during startup.
+ */
+const VIEW_PRIORITY = -100
 
 /**
  * Mount all plugin contributions.
@@ -42,10 +57,33 @@ export function apply(ctx) {
     document.head.appendChild(style)
     return () => style.remove()
   }, 'dsh-inline-diff: stylesheet')
+  // Syntax highlighting owns a second stylesheet: it is palette data driven
+  // and can be swapped independently, while surfaces still render correctly
+  // (default foreground) when no tokens are present.
+  ctx.effect(() => {
+    const style = document.createElement('style')
+    style.dataset.dshPlugin = 'inline-diff-syntax'
+    style.textContent = SYNTAX_CSS
+    document.head.appendChild(style)
+    return () => style.remove()
+  }, 'dsh-inline-diff: syntax stylesheet')
   const t = ctx.locale.bind(NS)
   console.info(`[dsh-inline-diff] client ${VERSION} · enhanced presentation`)
   ctx.effect(() => startReadRangeChips(t), 'dsh-inline-diff: read range chips')
   initSettings(ctx.configForms)
+  // Mirror the host light/dark appearance onto the document (html + body) so the
+  // plugin surfaces can pick readable shell/inner colors; dispose restores the
+  // host look.
+  ctx.effect(() => {
+    const stopAppearance = startAppearanceTracking()
+    return () => {
+      stopAppearance()
+      if (typeof document !== 'undefined') {
+        delete document.documentElement.dataset.dshInlineDiffAppearance
+        if (document.body !== null) delete document.body.dataset.dshInlineDiffAppearance
+      }
+    }
+  }, 'dsh-inline-diff: appearance')
 
   // Tool-row takeovers follow the persisted display options. Re-registering
   // disposes the previous set first, which restores the shipped DSH row.
@@ -67,7 +105,7 @@ export function apply(ctx) {
           disposers.push(ctx.slots.register({
             name: 'tool.call.toolview',
             key,
-            priority: -1,
+            priority: VIEW_PRIORITY,
             locale: NS,
           }, InlineDiffCard))
         }
@@ -77,19 +115,21 @@ export function apply(ctx) {
           disposers.push(ctx.slots.register({
             name: 'tool.call.toolview',
             key,
-            priority: -1,
+            priority: VIEW_PRIORITY,
             locale: NS,
           }, EnhancedShellCard))
         }
       }
       // Details-style tools own keyed views; take them over as well so the
-      // "other tool calls" option also applies to e.g. 查询运行时.
+      // "other tool calls" option also applies to e.g. 查询运行时. Search and web
+      // tools ship rich stock cards; the same option takes those over so one
+      // conversation does not mix flat rows with native disclosure cards.
       if (settings.toolCalls === 'enhanced') {
-        for (const key of [...ENHANCED_DETAILS_KEYS, ...ENHANCED_GENERIC_KEYS]) {
+        for (const key of [...ENHANCED_DETAILS_KEYS, ...ENHANCED_GENERIC_KEYS, ...ENHANCED_SEARCH_WEB_KEYS]) {
           disposers.push(ctx.slots.register({
             name: 'tool.call.toolview',
             key,
-            priority: -1,
+            priority: VIEW_PRIORITY,
             locale: NS,
           }, EnhancedExpandedTool))
         }
@@ -103,20 +143,14 @@ export function apply(ctx) {
     }
   })
 
-  // The tool-call node renderer stays mounted for the page lifetime and reads
-  // the display settings live. This keeps keyed child dispatch intact (Read /
-  // todo / ask / this plugin's cards still render themselves) while making the
-  // enhanced ⇄ DSH-native switch instantaneous, without relying on a page reload
-  // that a desktop shell may intercept.
-  ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-    name: 'conversation.chat.node',
-    key: 'tool-call',
-    priority: -1,
-    locale: NS,
-    children: {
-      'tool.call.toolview': { kind: 'keyed', scope: 'session' },
-    },
-  }, EnhancedToolCallTree))
+  // Do not shadow `conversation.chat.node`'s tool-call entry. In dsh
+  // >= 0.2.2-rc.1 the official Tool layer (@deepseek-ai/dsh-client-ui-tool)
+  // owns that entry and declares `tool.call.toolview` as its child; the slots
+  // registry permits one declaration per slot, so a second `children` table
+  // throws "slot ... is already declared" and aborts the rest of this apply().
+  // The keyed registrations above are the supported extension point: the
+  // official tree dispatches them by tool name and keeps its generic row for
+  // unregistered tools.
 
   // Frame-wide overlays. Both render through a body-level React portal, so
   // they sit above host chrome, themes, and third-party floating layers.
