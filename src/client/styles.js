@@ -1,50 +1,43 @@
 /**
- * Plugin-owned stylesheet. Every surface inherits the Host theme through
- * `--dsw-alias-*` tokens (plus documented primitives tokens) and falls back to
- * neutral values when a token is absent, so a theme rename only degrades chrome.
- * Diff greens/reds are mixed from the Host success/error color tokens so they
- * stay legible in both light and dark themes.
+ * 插件自有主样式表（字符串形式，由 index.jsx 作为 `<style>` 注入）。
+ *
+ * 所有表面都通过宿主的 `--dsw-alias-*` token（以及有文档的 primitives token）
+ * 继承主题；token 缺失时回退到中性色，因此主题改名最坏也只是chrome 降级，不会
+ * 变成不可读。差异的绿/红从宿主的 success/error 颜色 token 混出来，保证浅色/
+ * 深色主题下都可读。
  */
 export const CSS = `
-/* ---- appearance-aware surfaces -------------------------------------------
-   Shell (card frame, dialogs, headers, footers) follows the active theme and
-   the host light/dark setting: layering the theme's own surface token over an
-   appearance-specific opaque base keeps the blue/gold/or whatever hue of the
-   theme while avoiding translucent, washed-out windows.
-   Inner content (diff rows, command execution, tool IO) follows the official
-   DSH light/dark code-block palette instead: dark near-black gray, light
-   near-white gray, with matching foreground colors so text never blends into
-   the background.
+/* ---- 外观感知的表面配色 ------------------------------------------------
+   外壳（卡片框、弹窗、头/脚）跟随当前主题与宿主浅/深色设置：把主题自己的
+   表面 token 叠在“外观专属的不透明底色”上，既保留主题的蓝/金/任意色相，又避免
+   半透明、发灰的窗口。
+   内部内容（差异行、命令执行、工具 IO）则跟随 DSH 官方浅/深色代码块配色：
+   深色近黑灰、浅色近白灰，并配对应前景色，文字不会与背景糊在一起。
 
-   The derived variables are declared on \`body\`, not \`:root\`: the official DSH
-   theme (and the descriptors injected by skin-center) define their
-   \`--dsw-alias-*\` tokens on \`body\`. A var() declared on \`:root\` resolves on the
-   root element, where those body-level tokens do not exist yet, so every
-   surface would silently keep the literal fallbacks and never follow the
-   theme. Declaring them on \`body\` resolves the theme tokens against the same
-   element that defines them (and keeps working for skins that define their
-   tokens on the root, because body inherits them). */
+   派生变量声明在 body 而不是 :root：官方 DSH 主题（以及皮肤中心注入的
+   描述符）把 --dsw-alias-* token 声明在 body 上。声明在 :root 的 var()
+   会在根元素解析，而根元素上没有那些 body 级 token，于是所有表面都会静默保留
+   字面 fallback、永远不跟随主题。声明在 body 上则与定义 token 的元素相同，
+   解析得到主题颜色（对把 token 定义在根上的皮肤同样有效，因为 body 会继承）。 */
 body {
   --did-fg-primary: #eef1f8;
   --did-fg-secondary: #c3cade;
   --did-fg-tertiary: #94a1bc;
   --did-border-1: rgba(151, 169, 216, 0.24);
   --did-border-2: rgba(151, 169, 216, 0.42);
-  /* dark appearance: neutral opaque underlay so the shell hue comes from the
-     theme's own surface token (blue with the maid skin, gray with the official
-     theme, whatever hue other themes define). */
+  /* 深色外观：中性不透明底层，外壳色相来自主题自己的表面 token
+   （女仆皮肤下是蓝色、官方主题下是灰色、其它主题是各自色相）。 */
   --did-shell-base: #101216;
   --did-shell-tint: var(--dsw-alias-bg-layer-1, #1a1c22);
   --did-shell-tint-2: var(--dsw-alias-bg-layer-2, #202329);
   --did-surface-1: var(--dsw-alias-bg-layer-1, #1a1c22);
   --did-surface-2: var(--dsw-alias-bg-layer-2, #202329);
-  /* Elevated surfaces (settings dialog) use the theme's layer-2 surface, not
-     --dsw-alias-bg-overlay: in the official dark theme the overlay token is a
-     mid-gray (around #61666b) meant for scrims, so a dialog filled with it looks
-     washed out/white against the dark UI. */
+  /* 抬升表面（设置弹窗）使用主题的 layer-2 表面，而不是
+   --dsw-alias-bg-overlay：官方深色主题里 overlay token 是给遮罩用的中灰
+   （约 #61666b），用它填充弹窗会显得发白/发灰。 */
   --did-surface-elevated: var(--dsw-alias-bg-layer-2, #202329);
   --did-dialog-surface: var(--dsw-alias-bg-layer-1, #1a1c22);
-  /* inner content uses the official dark code-block palette, not the theme */
+  /* 内部内容使用官方深色代码块配色，而不是主题色 */
   --did-io-bg: #1b1d21;
   --did-io-fg: #e9ebef;
   --did-io-muted: #9199a8;
@@ -59,8 +52,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-fg-tertiary: #6f7c99;
   --did-border-1: rgba(71, 91, 145, 0.24);
   --did-border-2: rgba(71, 91, 145, 0.42);
-  /* light appearance: neutral near-white underlay, shell hue again comes from
-     the theme's own light surface token. */
+  /* 浅色外观：中性近白底层，外壳色相同样来自主题自己的浅色表面 token。 */
   --did-shell-base: #ffffff;
   --did-shell-tint: var(--dsw-alias-bg-layer-1, #f4f6f9);
   --did-shell-tint-2: var(--dsw-alias-bg-layer-2, #edf0f4);
@@ -68,7 +60,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-surface-2: var(--dsw-alias-bg-layer-2, #edf0f4);
   --did-surface-elevated: var(--dsw-alias-bg-layer-2, #edf0f4);
   --did-dialog-surface: var(--dsw-alias-bg-layer-1, #f4f6f9);
-  /* inner content uses the official light code-block palette */
+  /* 内部内容使用官方浅色代码块配色 */
   --did-io-bg: #f8f9fb;
   --did-io-fg: #1b1c1e;
   --did-io-muted: #6a7280;
@@ -77,9 +69,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-seg-active: color-mix(in srgb, var(--dsw-alias-brand-primary, #5686fe) 18%, #ffffff);
   --did-accent: var(--dsw-alias-brand-primary, #5686fe);
 }
-/* ---- per-card-type shell / inner tone overrides --------------------------
-   Set by the settings panel on each rendered card; the values here override
-   the document-level appearance variables for that card only. */
+/* ---- 每类卡片的“外壳 / 内部”配色覆盖 --------------------------------
+   由设置面板写到每张已渲染卡片上；这里的值只覆盖该卡片的文档级外观变量。 */
 [data-shell-tone='light'] {
   --did-shell-base: #ffffff;
   --did-surface-1: #f4f6f9;
@@ -124,14 +115,13 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-io-muted: var(--did-fg-tertiary);
   --did-io-border: var(--did-border-1);
 }
-/* ---- enhanced flat flat command row (bash / pwsh) ---- */
+/* ---- 增强风格平铺命令执行行（bash / pwsh / win_bash） ---- */
 .enhanced-tool {
   --enhanced-mono: var(--dsw-font-markdown-code-block-small, 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   display: flex;
   flex-direction: column;
-  /* No gap between the head and the IO panel: the IN status bar must reach the
-     title strip without a blank band above it. Spacing is carried by the head
-     padding instead. */
+  /* 头部与 IO 面板之间不留 gap：IN 状态条必须直接顶到标题条，中间不能有空白带。
+   间距由头部的 padding 承担。 */
   gap: 0;
   min-width: 0;
   margin: 4px 0 4px 2px;
@@ -148,8 +138,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   line-height: 1.55;
 }
 .enhanced-head { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 1px 5px; }
-/* Body cards: keep breathing room under the title text, but the IO panel and
-   its status bars still touch the title strip. */
+/* 有内容的卡片：标题文字下方保留呼吸空间，但 IO 面板及其状态条仍紧贴标题条。 */
 .enhanced-tool[data-body='true'] .enhanced-head { padding-bottom: 3px; }
 .enhanced-dot {
   flex: none;
@@ -161,8 +150,11 @@ body[data-dsh-inline-diff-appearance='light'] {
 .enhanced-tool[data-state='ok'] .enhanced-dot { background: var(--dsw-alias-state-success-primary); }
 .enhanced-tool[data-state='error'] .enhanced-dot { background: var(--dsw-alias-state-error-primary); }
 .enhanced-tool[data-state='stopped'] .enhanced-dot { background: var(--dsw-alias-state-warn-primary); }
+/* 状态点呼吸：与 IN/OUT 色条共用 1.2s 周期与同一相位变量（--did-pulse-phase），
+   保证同一张卡片的圆点和色条同频同相；圆点仍是透明度呼吸，色条是描边颜色呼吸，
+   两者视觉效果不同，只是节奏对齐。不同卡片的相位由 motion.js 按 callId 错开。 */
 .enhanced-tool[data-state='running'] .enhanced-dot,
-.enhanced-tool[data-state='preparing'] .enhanced-dot { background: var(--dsw-alias-brand-primary); animation: dsh-inline-diff-pulse 1.1s ease-in-out infinite; }
+.enhanced-tool[data-state='preparing'] .enhanced-dot { background: var(--dsw-alias-brand-primary); animation: dsh-inline-diff-pulse 1.2s ease-in-out infinite; animation-delay: var(--did-pulse-phase, 0ms); }
 .enhanced-kind { display: inline-flex; flex: none; color: var(--did-fg-tertiary); }
 .enhanced-tool[data-variant='command'] .enhanced-kind { color: var(--dsw-alias-state-success-primary); }
 .enhanced-tool[data-variant='tool'] .enhanced-kind { color: var(--dsw-alias-brand-primary); }
@@ -259,17 +251,14 @@ body[data-dsh-inline-diff-appearance='light'] {
   display: grid;
   grid-template-columns: 2.6em minmax(0, 1fr);
   gap: 8px;
-  /* No right padding: the scroll container below reaches the card's right edge
-     so its scrollbar sits against the border (like the diff cards); the scroll
-     content carries the visual inset itself. */
+  /* 右内边距为 0：下面的滚动容器一直延伸到卡片右边缘，滚动条贴着边框（与差异
+   卡片一致）；视觉留白由滚动内容自己承担。 */
   padding: 8px 0 8px 7.5px;
   border-left: 2.5px solid color-mix(in srgb, var(--did-section-bar, var(--dsw-alias-label-tertiary)) 70%, transparent);
 }
-/* IN and OUT own their own status bar, drawn as the section's left border so it
-   can follow the card's rounded bottom corner instead of being clipped by it:
-   IN runs from the title strip down to the IN/OUT hairline, OUT runs from that
-   hairline all the way along the card's curve to the bottom edge. The hairline
-   is the only separator, so the two bars need no extra blank area between them. */
+/* IN 与 OUT 各自拥有状态条，画成分区的左边框，这样它能沿着卡片底部圆角走而不是
+   被圆角裁掉：IN 从标题条向下到 IN/OUT 发丝线，OUT 从发丝线沿卡片曲线一直到
+   底边。发丝线是唯一的分隔物，两条状态条之间不需要额外空白。 */
 .enhanced-section:last-child {
   border-bottom-left-radius: var(--dsw-radius-lg, 16px);
 }
@@ -283,13 +272,15 @@ body[data-dsh-inline-diff-appearance='light'] {
   0%, 100% { border-left-color: color-mix(in srgb, var(--did-section-bar) 28%, transparent); }
   50% { border-left-color: color-mix(in srgb, var(--did-section-bar) 92%, transparent); }
 }
+/* IN / OUT 各自按自己的状态决定是否呼吸（互不影响）；呼吸周期与卡片状态点一致，
+   并使用同一张卡片上的相位变量，使同一卡片的圆点与色条同频同相。 */
 .enhanced-section[data-state='running'],
 .enhanced-section[data-state='preparing'] {
   animation: dsh-inline-diff-bar-pulse 1.2s ease-in-out infinite;
+  animation-delay: var(--did-pulse-phase, 0ms);
 }
-/* One independent scroll area per section (IN and OUT each own theirs). The
-   container spans to the card's right edge so its scrollbar is flush with the
-   border; padding-right keeps the code text off the scrollbar. */
+/* 每个分区一个独立滚动区（IN 与 OUT 各自拥有）。容器延伸到卡片右边缘，让滚动条
+   与边框齐平；padding-right 让代码文字不压到滚动条上。 */
 .enhanced-scroll { min-width: 0; max-height: 260px; overflow: auto; padding-right: 10px; }
 .enhanced-scroll-in { max-height: 180px; }
 .enhanced-label {
@@ -302,8 +293,8 @@ body[data-dsh-inline-diff-appearance='light'] {
 .enhanced-code {
   min-width: 0;
   margin: 0;
-  /* Default code text follows the inner tone / appearance (light inner = dark
-     text, dark inner = light text) instead of the shell foreground. */
+  /* 代码默认文字颜色跟随内部配色/外观（浅色内层 = 深色文字，深色内层 = 浅色
+   文字），而不是跟随外壳前景色。 */
   color: var(--did-io-fg);
   font-family: var(--enhanced-mono);
   font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 2px);
@@ -333,7 +324,7 @@ body[data-dsh-inline-diff-appearance='light'] {
 .enhanced-toggle:hover { color: var(--did-fg-primary); }
 .enhanced-toggle-placeholder { flex: none; width: 14px; height: 14px; }
 
-/* ---- sidebar-foot launcher ---- */
+/* ---- 侧边栏底部启动按钮 ---- */
 .did-launcher {
   display: inline-flex;
   align-items: center;
@@ -351,7 +342,7 @@ body[data-dsh-inline-diff-appearance='light'] {
 .did-launcher:hover { background: color-mix(in srgb, var(--did-fg-primary) 7%, transparent); color: var(--did-fg-primary); }
 .did-launcher-label { overflow: hidden; text-overflow: ellipsis; }
 
-/* ---- settings panel / page / modal ---- */
+/* ---- 设置面板 / 设置页 / 设置弹窗 ---- */
 .did-settings-page { max-width: 760px; padding: 4px 0 24px; }
 .did-settings { display: flex; flex-direction: column; min-width: 0; color: var(--did-fg-primary); }
 .did-settings-head { display: flex; align-items: flex-start; gap: 12px; padding: 2px 0 16px; }
@@ -424,6 +415,30 @@ body[data-dsh-inline-diff-appearance='light'] {
   font-size: 12px;
   line-height: 18px;
 }
+/* 原创声明（设置页 + 设置弹窗）。醒目但克制：品牌色淡染表面 + 左侧强调竖条；
+   刻意不用红/绿，因为这两种颜色仍保留给删除/新增差异标记。 */
+.did-originality {
+  margin: 12px 0 2px;
+  padding: 10px 14px 11px;
+  border: 0.5px solid color-mix(in srgb, var(--did-accent) 38%, var(--did-border-1));
+  border-inline-start: 3px solid var(--did-accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--did-accent) 8%, var(--did-surface-1));
+  color: var(--did-fg-secondary);
+}
+.did-originality-title {
+  margin-bottom: 3px;
+  color: var(--did-fg-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 19px;
+}
+.did-originality-body {
+  font-size: 12px;
+  line-height: 18px;
+  /* 声明里含一个很长的仓库 URL，必须换行而不是把面板撑宽（窄弹窗/窄页面）。 */
+  overflow-wrap: anywhere;
+}
 .did-settings-error { margin-top: 10px; color: var(--dsw-alias-state-error-primary); font-size: 12px; line-height: 18px; white-space: pre-wrap; }
 .did-settings-foot { display: flex; align-items: center; gap: 10px; padding-top: 14px; }
 .did-settings-reset {
@@ -473,9 +488,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   color: var(--did-fg-primary);
   box-shadow: 0 18px 60px color-mix(in srgb, var(--did-fg-primary) 12%, transparent);
 }
-/* Modal header banner: title + description + close stay fixed; the scroll body
-   below is the only scrolling element, so its scrollbar never crosses the
-   banner and the rounded dialog corners clip it instead of letting it spill. */
+/* 弹窗头部横幅：标题、说明与关闭按钮固定；下方滚动区是唯一滚动元素，滚动条
+   不会穿过横幅，圆角弹窗边缘会裁掉它而不是让它溢出。 */
 .did-settings-banner {
   flex: none;
   display: flex;
@@ -491,8 +505,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  /* Right padding keeps the scrollbar a little inside the rounded dialog edge
-     instead of hugging (and appearing to spill over) the border. */
+  /* 右内边距让滚动条稍微内缩在圆角边缘里，而不是紧贴（并显得溢出）边框。 */
   padding: 14px 12px 16px 22px;
 }
 .did-settings-scroll .did-settings-body { border-top: 0; }
@@ -509,8 +522,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   flex-direction: column;
   min-width: 0;
   margin: 4px 0 4px 2px;
-  /* A touch thicker than the host hairline so the card edge reads as a real
-     surface; the color rows below still bleed all the way to that edge. */
+  /* 比宿主发丝线略粗，让卡片边缘看起来是一块真实表面；下面的色行仍会一直
+   铺到这条边。 */
   border: 0.5px solid color-mix(in srgb, var(--did-border-2) 45%, var(--did-border-1));
   border-inline-width: 0.25px;
   border-radius: var(--dsw-radius-lg, 16px);
@@ -632,7 +645,9 @@ body[data-dsh-inline-diff-appearance='light'] {
 .did-state[data-state='error'] { color: var(--dsw-alias-state-error-primary); }
 .did-state[data-state='running'], .did-state[data-state='preparing'] { color: var(--dsw-alias-brand-primary); }
 .did-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
-.did-state[data-state='running'] .did-dot, .did-state[data-state='preparing'] .did-dot { animation: dsh-inline-diff-pulse 1.1s ease-in-out infinite; }
+/* 文件修改卡片的状态点：与命令/工具卡片共用 1.2s 呼吸周期；相位取卡片根节点上的
+   --did-pulse-phase（由 motion.js 按 callId 派生），不同卡片互相错开。 */
+.did-state[data-state='running'] .did-dot, .did-state[data-state='preparing'] .did-dot { animation: dsh-inline-diff-pulse 1.2s ease-in-out infinite; animation-delay: var(--did-pulse-phase, 0ms); }
 @keyframes dsh-inline-diff-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 
 .did-zoom {
@@ -651,8 +666,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   cursor: pointer;
 }
 .did-zoom:hover:not([aria-disabled='true']) { color: var(--dsw-alias-brand-primary); border-color: currentColor; }
-/* Not a native disabled button on purpose: it must still swallow the click so
-   the card header (the collapse toggle) never receives it. */
+/* 故意不用原生 disabled 按钮：它必须仍能吞掉点击，让卡片头（折叠开关）永远
+   收不到这次点击。 */
 .did-zoom[aria-disabled='true'] { opacity: 0.4; cursor: default; }
 
 .did-body {
@@ -698,8 +713,8 @@ body[data-dsh-inline-diff-appearance='light'] {
 
 .did-row {
   display: grid;
-  /* Compact gutters: both line-number columns stay tabular, but the code text
-     starts much closer to the card edge instead of after a wide blank gutter. */
+  /* 紧凑行号槽：两列行号仍保持等宽数字，但代码文字离卡片边缘更近，不再隔着一大段
+   空白行号槽才开始。 */
   grid-template-columns: 2.2em 2.2em 0.8em minmax(0, 1fr) auto;
   column-gap: 1px;
   min-width: 0;
@@ -749,8 +764,8 @@ body[data-dsh-inline-diff-appearance='light'] {
 }
 .did-numhead-label[data-side='old'] { color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 62%, var(--did-fg-tertiary)); }
 .did-numhead-label[data-side='new'] { color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 62%, var(--did-fg-tertiary)); }
-/* Reinforce the mapping on change rows: the gutter that belongs to the changed
-   side is tinted like that side (deleted row → old number, added row → new). */
+/* 在变更行上强化对应关系：属于改动那一侧的行号槽染成该侧颜色
+   （删除行 → 旧行号，新增行 → 新行号）。 */
 .did-row[data-kind='del'] .did-num[data-side='old'] {
   color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 60%, var(--did-fg-tertiary));
   font-weight: 600;
@@ -789,7 +804,7 @@ body[data-dsh-inline-diff-appearance='light'] {
 .did-row[data-kind='del'] .did-move { color: var(--dsw-alias-state-error-primary); }
 .did-row[data-kind='add'] .did-move { color: var(--dsw-alias-state-success-primary); }
 
-/* Word/character-level spans: deeper than the row's line-level wash. */
+/* 词/字符级改动片段：比整行级的洗色更深一层。 */
 .did-row[data-kind='del'] .did-seg[data-changed='true'],
 .did-cell[data-kind='del'] .did-seg[data-changed='true'] {
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 32%, transparent);
@@ -883,7 +898,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   overflow-wrap: anywhere;
 }
 
-/* ---- root overlay / modal ---- */
+/* ---- 根级浮层 / 对比弹窗 ---- */
 
 .did-overlay-root { position: fixed; inset: 0; z-index: 2147483647; pointer-events: none; }
 .did-overlay-root[data-open='true'] { pointer-events: auto; }
@@ -977,15 +992,14 @@ body[data-dsh-inline-diff-appearance='light'] {
 
 .did-sbs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-width: 0; }
 
-/* The before/after strip is part of the dialog header now (outside the
-   scrollable body), so it keeps its own row and never shares space with the
-   body scrollbar. It no longer needs sticky positioning or a stacking level. */
+/* 修改前/后栏头现在是弹窗头部的一部分（在滚动区之外），因此独占一行，永远不会
+   与正文滚动条抢空间；也不再需要 sticky 定位或额外的层叠层级。 */
 .did-panes-head { flex: none; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); background: var(--did-dialog-surface); border-bottom: 0.5px solid var(--did-border-2); }
 .did-pane-label { padding: 5px var(--did-inset-x); color: var(--did-fg-secondary); font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; }
 .did-pane-label + .did-pane-label { border-left: 0.5px solid var(--did-border-1); }
 
-/* Hunk bars stick to the top of the scrollable body: the before/after strip is
-   above that body in normal flow, so the bars can never paint over it. */
+/* hunk 头吸顶于滚动区顶部：修改前/后栏头在正常流里位于该滚动区上方，因此
+   hunk 头永远不可能盖住它。 */
 .did-sbs .did-bar { grid-column: 1 / -1; align-self: start; }
 
 .did-read-main { min-width: 0; }
@@ -1038,10 +1052,9 @@ body[data-dsh-inline-diff-appearance='light'] {
   .did-cell + .did-cell { border-top: 0.5px dashed var(--did-border-2); }
 }
 
-/* ---- settings: supported-language list -----------------------------------
-   Only the layout shell lives here; the badge look itself is the shared
-   .did-lang style injected with the syntax stylesheet, so the settings list
-   and the card header badges stay identical. */
+/* ---- 设置页：支持的语言列表 --------------------------------------------
+   这里只放布局外壳；徽章外观本身是语法高亮样式表里共享的 .did-lang 样式，
+   因此设置页列表与卡片头徽章外观完全一致。 */
 .did-langs-details { margin-top: 8px; }
 .did-langs-details > summary {
   display: inline-flex;

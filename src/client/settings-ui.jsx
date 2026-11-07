@@ -1,7 +1,22 @@
 /**
- * Plugin settings surface: a Settings page entry, a sidebar-foot launcher, and
- * a body-level modal reusing the same panel. All controls only change display
- * preferences; no session data or tool behavior is affected.
+ * 插件设置界面：设置页内的一整页、侧边栏底部启动按钮、以及复用同一面板的
+ * body 级设置弹窗。
+ *
+ * 职责：渲染全部显示偏好控件（语言、文件卡片、语法高亮、语言徽章、命令执行行、
+ * 其它工具调用、过程折叠、配色），驱动 settings.js 的读写与 DSH transcriptView
+ * 联动，并在失败时显示可读错误。
+ *
+ * 依赖：react / react-dom（portal）、./languages.js（支持语言列表）、
+ * ./project.js（版本/作者/仓库链接）、./settings.js（设置读写与 transcript
+ * 操作）、./use-settings.js（设置订阅）。
+ * 输入输出：SettingsSection / SettingsLauncher / SettingsModal 是 slot 组件；
+ * 面板本身只读设置、写设置，不触碰会话数据与工具行为。
+ *
+ * 失败与回退：
+ *   - 语言列表解析失败 → 显示空列表（设置页其余部分照常工作）；
+ *   - configForms 服务不可用 → 相关操作 catch 后显示错误文本，不阻塞其它设置；
+ *   - 重置默认值时若 toolCalls 改变 → 延迟刷新页面让接管路由同步（180ms）；
+ *   - 所有控件都是“点击即保存”（设置自动生效，页脚有提示）。
  */
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
@@ -12,22 +27,28 @@ import {
   getSettings,
   resetSettings,
   setTranscriptPreference,
-  subscribeSettings,
   updateSettings,
 } from './settings.js'
+import { useSettingsSnapshot } from './use-settings.js'
+
+/**
+ * 原创声明中引用的仓库地址。**这不是本项目**——而是声明里明确撇清关系的、
+ * 同名的无关插件。放在这里（而不是 project.js）是为了让项目身份模块只描述本插件自己的 URL；替换/删除这条声明时只需改这里与两处字典文案。
+ */
+const ORIGINALITY_REPO_URL = 'https://github.com/JanEickholt/dsh-inline-diff'
 
 /* ---- settings modal store ---- */
 let modalOpen = false
 const modalListeners = new Set()
 
-/** Open the plugin settings modal. */
+/** 打开插件设置弹窗（已打开时幂等，不发多余通知）。 */
 export function openSettingsModal() {
   if (modalOpen) return
   modalOpen = true
   for (const listener of modalListeners) listener()
 }
 
-/** Close the plugin settings modal. */
+/** 关闭插件设置弹窗（未打开时幂等）。 */
 export function closeSettingsModal() {
   if (!modalOpen) return
   modalOpen = false
@@ -43,11 +64,10 @@ function useModalOpen() {
   return useSyncExternalStore(subscribeModal, () => modalOpen, () => modalOpen)
 }
 
-function useSettings() {
-  return useSyncExternalStore(subscribeSettings, getSettings, getSettings)
-}
-
-/** The recognizer's registry: resolved once, and a missing list never breaks settings. */
+/**
+ * 支持语言列表（模块级缓存）：语言识别器注册表在运行期不会变化，只需解析一次；
+ * 解析失败时缓存空数组，设置页其余部分照常渲染（设置页不能因语言列表失败而白屏）。
+ */
 let languagesCache
 function supportedLanguageList() {
   if (languagesCache === undefined) {
@@ -61,7 +81,7 @@ function supportedLanguageList() {
   return languagesCache
 }
 
-/** Two-or-three-way segmented selector styled with host theme tokens. */
+/** 2~3 选一的分段选择器（使用宿主主题 token 的胶囊按钮组）。 */
 function Segmented({ ariaLabel, value, options, disabled, onChange }) {
   return (
     <div className="did-seg" role="radiogroup" aria-label={ariaLabel}>
@@ -83,7 +103,7 @@ function Segmented({ ariaLabel, value, options, disabled, onChange }) {
   )
 }
 
-/** Compact native select used by the per-card shell/inner tone controls. */
+/** 紧凑的原生 select，用于每类卡片的外壳/内部配色控件。 */
 function ToneSelect({ label, value, options, onChange }) {
   return (
     <label className="did-tone">
@@ -114,7 +134,7 @@ function innerToneOptions(t) {
   ]
 }
 
-/** Sliders icon for the sidebar-foot launcher. */
+/** 侧边栏底部启动按钮的滑杆图标。 */
 function SlidersIcon({ size = 15 }) {
   return (
     <svg viewBox="0 0 16 16" width={size} height={size} fill="none" aria-hidden="true" focusable="false">
@@ -131,7 +151,7 @@ function SlidersIcon({ size = 15 }) {
   )
 }
 
-/** One labeled setting row with a segmented control. */
+/** 一行带标签/说明/额外控件的设置项（右侧放分段选择器）。 */
 function SettingRow({ label, description, children, extra }) {
   return (
     <div className="did-setting">
@@ -145,7 +165,7 @@ function SettingRow({ label, description, children, extra }) {
   )
 }
 
-/** Close button shared by the inline settings head and the modal banner. */
+/** 关闭按钮：设置页头部与弹窗横幅共用。 */
 function SettingsCloseButton({ onClose, t }) {
   return (
     <button type="button" className="did-settings-close" onClick={onClose} aria-label={t('close')} title={t('close')}>
@@ -157,9 +177,9 @@ function SettingsCloseButton({ onClose, t }) {
 }
 
 /**
- * Collapsible list of every language the recognizer knows. The badge spans are
- * only mounted while the details element is open, so the settings page stays
- * light; the look is the same `.did-lang` badge used in the card header.
+ * 可折叠的“支持的语言”列表。
+ * 只有 `<details>` 展开时才挂载徽章 span，设置页保持轻量；徽章样式复用卡片头
+ * 的 `.did-lang`（语法高亮样式表里），列表与卡片外观一致。
  */
 function SupportedLanguages({ t, languages }) {
   const [open, setOpen] = useState(false)
@@ -188,9 +208,13 @@ function SupportedLanguages({ t, languages }) {
   )
 }
 
-/** The shared settings panel body. */
+/**
+ * 共享的设置面板主体（设置页与设置弹窗共用）。
+ * 局部状态：busy（异步操作进行中禁用控件）、error（可读错误文本）、dsmMode
+ * （当前 DSH 对话记录模式，用于说明文案）。
+ */
 function SettingsPanel({ t, onClose }) {
-  const settings = useSettings()
+  const settings = useSettingsSnapshot()
   const languageList = supportedLanguageList()
   const [dsmMode, setDsmMode] = useState(undefined)
   const [busy, setBusy] = useState(false)
@@ -243,6 +267,33 @@ function SettingsPanel({ t, onClose }) {
       </div>
 
       <div className="did-settings-body">
+        {/* Language row first: it drives every label on this panel, and the
+            switch takes effect immediately because the wrapper component
+            (withPluginI18n) subscribes to the plugin language. */}
+        <SettingRow label={t('settings.language')} description={t('settings.languageDesc')}>
+          <Segmented
+            ariaLabel={t('settings.language')}
+            value={settings.language}
+            onChange={value => updateSettings({ language: value })}
+            options={[
+              { value: 'zh', label: t('settings.languageZh') },
+              { value: 'en', label: t('settings.languageEn') },
+              { value: 'auto', label: t('settings.languageAuto') },
+            ]}
+          />
+        </SettingRow>
+
+        {/* Prominent, non-intrusive originality statement. It deliberately sits
+            directly under the language row so it is visible without scrolling on
+            both the Settings page and the modal; the copy follows the selected
+            plugin language. */}
+        <div className="did-originality" role="note">
+          <div className="did-originality-title">{t('originality.title')}</div>
+          <div className="did-originality-body">
+            {t('originality.body', { repo: ORIGINALITY_REPO_URL })}
+          </div>
+        </div>
+
         <SettingRow label={t('settings.fileCards')} description={t('settings.fileCardsDesc')}           extra={
             <div className="did-tones">
               <ToneSelect label={t('settings.shellTone')} value={settings.fileShellTone} onChange={value => updateSettings({ fileShellTone: value })} options={shellToneOptions(t)} />
@@ -350,9 +401,8 @@ function SettingsPanel({ t, onClose }) {
             onChange={value => {
               if (value === settings.toolCalls) return
               updateSettings({ toolCalls: value })
-              // Expanded rows inside DSH's native folded groups stay hidden, so
-              // enabling this style also unfolds completed turns. The rows and
-              // this preference switch live — no page reload is involved.
+              // 展开行若落在 DSH 原生折叠组里仍会被遮住，因此开启该风格时把
+              // 已完成的轮次也展开（切到 verbose）。行与偏好都即时生效，不刷新页面。
               if (value === 'enhanced' && settings.transcript === 'native') {
                 setTranscriptPreference('enhanced').catch(() => {})
               }
@@ -400,7 +450,7 @@ function SettingsPanel({ t, onClose }) {
   )
 }
 
-/** Settings page entry rendered inside the Settings shell. */
+/** 设置页条目（渲染在 DSH 设置 shell 内）。 */
 export function SettingsSection({ t }) {
   return (
     <div className="did-settings-page">
@@ -409,7 +459,7 @@ export function SettingsSection({ t }) {
   )
 }
 
-/** Sidebar-foot launcher: always available even when a theme hides Settings. */
+/** 侧边栏底部启动按钮：即使第三方主题隐藏了 DSH 设置入口也仍然可用。 */
 export function SettingsLauncher({ wide, t }) {
   return (
     <button
@@ -425,7 +475,7 @@ export function SettingsLauncher({ wide, t }) {
   )
 }
 
-/** Body-level modal containing the same settings panel. */
+/** body 级设置弹窗：复用同一个设置面板，body 级 portal 保证模态层级正确。 */
 export function SettingsModal({ t }) {
   const open = useModalOpen()
   const [host, setHost] = useState(null)

@@ -6,6 +6,7 @@
 
 | 版本 | 发布日期 | 摘要 |
 | --- | --- | --- |
+| [1.3.0] | 2026-11-08 | 中英双语界面与设置页语言切换（默认中文）、英文文档与双语截图、原创声明、安全加固（2 HIGH + 3 MEDIUM）、详细中文注释与多级回退、首次发布 npm 包 |
 | [1.2.6] | 2026-11-07 | 修复官方主题外壳配色、命令失败卡片底部多余外壳、行号图例对齐与单侧适配、徽章隐藏语义等 |
 | [1.2.5] | 2026-11-07 | 行号「旧/新」图例、弹窗说明横幅与设置页标题固定、滚动条内缩 |
 | [1.2.4] | 2026-11-07 | IN/OUT 滚动条贴边、放大弹窗「修改前/后」栏归入标题并修正横条层级 |
@@ -21,6 +22,37 @@
 | [0.2.1] | 2026-11-03 | 安装与样式修复 |
 | [0.2.0] | 2026-11-03 | 展开风格与工具行配置 |
 | [0.1.0] | 2026-11-02 | 内部原型 |
+
+## [1.3.0] - 2026-11-08
+
+### 新增
+
+- **插件级界面语言（中文默认 / English / 跟随 DSH）**：设置页与设置弹窗顶部新增「界面语言」选择，切换立即生效、无需刷新；默认中文，不修改 DSH 全局语言。新增 `src/client/i18n.js`（语言解析、字典翻译、组件包装与回退链），全部插件界面文案（卡片、弹窗、工具行、Read 范围、设置、aria-label/title、空/错误状态）统一走双语字典。
+- **完整英文文档与双语截图**：新增 `README.en.md`、`plugin/README.en.md`、`docs/display-behavior.en.md`；中文文档为默认主文档，三份文档顶部提供中/英切换；新增 `docs/en/` 英文界面截图（与中文截图同名一一对应）。
+- **原创声明**：插件设置页醒目位置与各文档标题后新增原创声明，说明本项目完全原创、与 JanEickholt/dsh-inline-diff 及任何同名插件/仓库无关、功能相似纯属巧合、实现与代码效果完全不同、开发时未参考同类插件、不是衍生或复刻作品。
+- **维护者文档**：新增维护者本地 GitHub 上传说明（放在工作区根目录，不进入仓库、不随发行包发布）；[docs/publish.md](docs/publish.md) 增加发布节奏（先 GitHub 源码 + Release，再 npm 发布）与 1.3.0 口径。
+- **测试**：新增 `tests/locales.test.mjs`（i18n 语言解析/回退/占位符/迁移）与 `tests/security.test.mjs`（信任边界、路由、快照预算、高亮转义、物化预算等 31 项）。
+
+### 安全加固（安全审计结论：无 CRITICAL；修复 2 HIGH + 3 MEDIUM）
+
+- **Host 只读 API 的浏览器信任边界（HIGH）**：优先复用 DSH `connection.admit`（Host / Origin / 跨站围栏 + HttpOnly、SameSite=Strict 会话 Cookie），无 `connection` 服务时回退 loopback / 绑定地址 + 同 authority Origin 围栏；任何异常都不 fail-open，防止 DNS rebinding 与未认证远程读取。
+- **快照内存总预算（HIGH）**：在条数与单侧上限之外新增 64MB 总字节预算与字节记账 LRU，避免异常输入把 Host 内存放大到 OOM。
+- **路由与输入加固（MEDIUM）**：仅接受 JSON（415）、action 预检（404）、请求体 1MB + 流式上限 + 10 秒超时（413/408）、`/read` 15 秒超时与 8 并发（429/504）、统一安全响应头、错误改为语义状态码 + 固定文案（不回显绝对路径 / errno / 堆栈）。
+- **客户端物化预算（MEDIUM）**：20 万行 / 单行 100 万字符预算在拆分逐行对象之前生效，超限降级为「文件过大」提示，避免 4MB 级输入冻结或撑爆渲染进程；`locateOnce` 与移动块候选对增加复杂度护栏。
+- **其他**：`read-range-dom` 在 `document.body` 缺失 / 观察异常时安全回退；CI 增加最小权限 `permissions: contents: read`；`npm audit`（含 devDependencies）0 漏洞，客户端无 `innerHTML` / `dangerouslySetInnerHTML` / `eval`。
+
+### 改进
+
+- **代码结构与注释**：客户端模块按「一个文件只做一类事」重新梳理（i18n 独立成模块）；关键路径补充详细中文注释（职责、输入输出、边界与回退）；核心逻辑抽为纯函数以便测试。
+- **多级回退**：修改前全文（快照 → 文件读取 → 差异块 → 说明）、全文对照、超大输入、语法高亮、界面语言（设置 → 中文 → key）、设置存储（localStorage → 内存默认值）、Host API 准入（connection → 本地围栏 → 403 降级）等均明确回退层级，最终给出可读说明而不是静默失败或抛错。
+- **安装方式文档**：npm 为主推方式（自 1.3.0 起 `dsh plugin add @him666233/dsh-inline-diff`），同时保留本地目录 / 手动 link / GitHub Release 安装；补充升级、卸载与按 profile 安装说明。
+- **仓库文件取舍**：明确构建产物 `plugin/client.js`、`plugin/cordis.patch.yml` 必须提交，`release/` 下的发行包作为 GitHub Release 资产而不进入源码历史等规则。
+
+### 变更
+
+- 版本号升至 `1.3.0`；`package-lock.json` 同步；`plugin/package.json` 的 `files` 增加 `README.en.md`；`build.mjs` 保持包名单一来源（`client.js` 模块 id 与 `cordis.patch.yml` 自动生成）。
+- 新增 `scripts/build-release.mjs`：一键生成 GitHub Release 两个 zip 与 `SHA256SUMS.txt`，并在打包前校验版本号三处一致、bundle patch / 客户端入口存在、包名在 manifest / patch / `client.js` 三处一致、构建产物与源码一致。
+- 文档截图：新增英文 `docs/en/` 12 张；中文设置页、放大弹窗截图按 1.3.0 新界面重拍（含语言选择与原创声明）。
 
 ## [1.2.6] - 2026-11-07
 

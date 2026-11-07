@@ -1,20 +1,44 @@
 /**
- * Page-level Read range chips.
+ * 页面级 Read 行号角标（直接操作 DOM 的补充层）。
  *
- * Read keeps its stock DSH card and the stock tree may render it through more
- * than one path (our tool-call node wrapper, a grouped/expanded official tree,
- * replayed history). Inserting the range chip from inside one React wrapper
- * therefore misses rows rendered elsewhere. This module watches the document
- * and mounts the chip directly next to the file link of every Read row; it only
- * observes stock presentation and never replaces the card or its disclosure.
+ * 背景：Read 工具保持 DSH 原生卡片，而原生卡片可能由多条渲染路径产生（本插件
+ * 的工具节点包装、官方分组/展开树、历史回放）。从某一层 React 包装内部插入
+ * 角标会漏掉其它路径渲染出来的行，因此这里改为观察整个文档：找到每个
+ * `[data-tool="read"]` 行，沿 React fiber 向上取到工具 block，算出范围后在
+ * 文件链接旁挂一个角标 `<span class="did-read-range">`。
+ *
+ * 依赖：./read-range.js（范围推导与文案）、宿主的 DOM 结构
+ * （`[data-disclosure-row]` 头、文件链接 button、`aria-expanded`）。
+ * 输入输出：startReadRangeChips(t) 接收“按当前插件语言翻译”的函数，返回清理
+ * 函数；模块自身不导出 DOM 节点。
+ *
+ * 失败与回退：
+ *   - 没有 document / 没有 MutationObserver（Node 单测）→ 返回 no-op 清理函数；
+ *   - 启动早期 document.body 尚不存在 → 返回 no-op（避免 observe(null) 抛错）；
+ *   - observe 时 body 被卸载/替换 → 断开并返回 no-op（角标不再新增，已有卡片
+ *     不受影响）；
+ *   - fiber 上找不到 block / 找不到原生头 / 找不到文件链接 → 该行跳过，不挂
+ *     角标也不报错（原生卡片保持原样）；
+ *   - 范围无法推导（null）→ 移除该行已有角标；
+ *   - 角标是纯展示节点：不替换卡片、不改 disclosure、不拦截原生事件。
  */
 import { readRangeLabels, readRangesForBlock } from './read-range.js'
 
+/** 角标节点标记属性：用于查找/去重/清理。 */
 const CHIP_ATTR = 'data-dsh-inline-diff-read-range'
-/** Row element → { block, label } so settled reads are only measured once. */
+/** 行元素 → { block, label }：同一 block 的角标只推导一次。 */
 const rowCache = new WeakMap()
 
-/** Find the tool-call block carried by a React fiber ancestor. */
+/**
+ * 从一个 DOM 节点沿 React fiber 向上找工具调用 block。
+ *
+ * React 把内部 fiber 挂在 DOM 元素的 `__reactFiber$…` 属性上（开发/生产构建
+ * 前缀不同），因此按前缀查找。最多向上 60 层，防止异常树结构导致死循环；找到
+ * 带 block 的 props 即返回，找不到返回 null。
+ *
+ * @param {Element} element
+ * @returns {object|null}
+ */
 function blockFromFiber(element) {
   const key = Object.keys(element).find(name => name.startsWith('__reactFiber$') || name.startsWith('__reactInternalInstance$'))
   if (key === undefined) return null
@@ -32,7 +56,17 @@ function blockFromFiber(element) {
   return null
 }
 
-/** Ensure one Read row has a range chip after its file link. */
+/**
+ * 让单个 Read 行的角标与当前状态同步（幂等）。
+ *
+ * 步骤：取 block → 用 rowCache 复用上次的 label（仅当 block 引用未变）→ 找到
+ * 原生 disclosure 头（没有就说明不是展开态原生行，跳过）→ 有 label 时确保角标
+ * 存在并把文本/title 更新成当前语言，无 label 时移除角标 → 行展开时隐藏角标
+ * （展开后卡片自己显示内容，角标重复）。
+ *
+ * @param {Element} row - `[data-tool="read"]` 行元素。
+ * @param {Function} t - 当前插件语言的翻译函数。
+ */
 function syncReadRow(row, t) {
   const block = blockFromFiber(row)
   if (block === null) return
@@ -62,20 +96,44 @@ function syncReadRow(row, t) {
   }
   if (chip.textContent !== label) chip.textContent = label
   if (chip.title !== label) chip.title = label
+  // 展开态不显示角标：内容已经可见，角标只会重复占位。
   const expanded = explicitHeader.getAttribute('aria-expanded') === 'true'
   if (chip.hidden !== expanded) chip.hidden = expanded
 }
 
-/** Whether one mutated node is (or contains) a Read row worth scanning. */
+/**
+ * 判断一个被增删的 DOM 节点是否可能与 Read 行有关。
+ * 只做轻量匹配（自身是 read 行或包含 read 行），避免每次 DOM 变动都全文档查询。
+ *
+ * @param {Node} node
+ * @returns {boolean}
+ */
 function isReadRelevant(node) {
   if (node === null || node === undefined || node.nodeType !== 1) return false
   if (typeof node.matches === 'function' && node.matches('[data-tool="read"]')) return true
   return typeof node.querySelector === 'function' && node.querySelector('[data-tool="read"]') !== null
 }
 
-/** Watch the transcript and keep every Read row's chip in sync. */
+/**
+ * 启动页面级 Read 角标观察器。
+ *
+ * 调度策略：
+ *   - 首帧扫描一次（第三方启动/开屏插件动画期间的扫描被推迟一帧，避免在用户
+ *     还看不到对话时抢占主线程）；
+ *   - MutationObserver 只关心两类变化：read 行内的属性变化（aria-expanded 切换）
+ *     与包含 read 行的子树增删；其余 DOM 变动（流式输出、其它插件动画）不触发
+ *     全文档 querySelectorAll；
+ *   - 多次变更合并成一帧（rAF，缺失时 setTimeout 16ms）执行一次扫描。
+ *
+ * @param {Function} t - 当前插件语言的翻译函数（每次渲染时动态调用）。
+ * @returns {() => void} 清理函数：断开观察器、取消待执行帧、移除所有角标。
+ */
 export function startReadRangeChips(t) {
   if (typeof document === 'undefined' || typeof MutationObserver !== 'function') return () => {}
+  // 启动早期（插件 apply 时）document.body 可能还不存在：此时观察器没有观察
+  // 目标。安全回退为 no-op，避免 observe(null) 抛错中断其余插件初始化。
+  const body = document.body
+  if (body === null || body === undefined) return () => {}
   let scheduled = false
   let frame = null
   const scan = () => {
@@ -90,14 +148,12 @@ export function startReadRangeChips(t) {
       ? requestAnimationFrame(scan)
       : setTimeout(scan, 16)
   }
-  // Third-party boot/splash plugins (e.g. 550C) animate a full-screen overlay
-  // for several seconds right after mount. Starting the page-wide observer and
-  // its first scan in that window only adds main-thread work behind a cover the
-  // user cannot see; defer one frame without delaying the visible transcript.
+  // 第三方开屏/启动插件（如 550C）挂载后会有数秒的全屏动画；这期间启动全页
+  // 观察器与首扫只会在用户看不到的遮罩后面增加主线程工作。推迟一帧开始，
+  // 不会延迟已经可见的对话。
   schedule()
-  // Only Read-row churn can change a chip. Filtering here matters on long,
-  // streaming conversations and while another plugin is animating: unrelated
-  // DOM mutations no longer wake a whole-document query.
+  // 只有 Read 行的增删/展开才会改变角标。在长会话流式输出、其它插件动画时，
+  // 这里的过滤能避免每一次无关 DOM 变动都唤醒一次全文档查询。
   const observer = new MutationObserver(records => {
     for (const record of records) {
       if (record.type === 'attributes') {
@@ -122,8 +178,17 @@ export function startReadRangeChips(t) {
       }
     }
   })
-  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded'] })
+  try {
+    observer.observe(body, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded'] })
+  } catch {
+    // body 在观察前被卸载/替换（宿主重建 DOM）：退化为不观察，chip 不再新增。
+    observer.disconnect()
+    return () => {}
+  }
+  let stopped = false
   return () => {
+    if (stopped) return
+    stopped = true
     observer.disconnect()
     if (frame !== null) {
       if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)

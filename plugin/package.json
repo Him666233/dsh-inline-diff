@@ -1,9 +1,9 @@
 {
-  "name": "@local/dsh-inline-diff",
-  "version": "1.2.6",
-  "private": true,
+  "name": "@him666233/dsh-inline-diff",
+  "version": "1.3.0",
   "description": "Inline diff cards for DSH: per-edit diffs, automatic file-language detection with syntax highlighting (red/green-safe palette), expanded command/generic/search/web rows, read ranges, and a side-by-side viewer. Works in desktop and Web UI profiles.",
   "type": "module",
+  "icon": "icon.svg",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -17,6 +17,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "dsh": {
@@ -32,6 +33,12 @@
       ]
     }
   },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT",
   "author": {
     "name": "Him666233",
@@ -40,21 +47,19 @@
   "homepage": "https://github.com/Him666233/dsh-inline-diff#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Him666233/dsh-inline-diff.git"
+    "url": "git+https://github.com/Him666233/dsh-inline-diff.git"
   },
   "bugs": {
     "url": "https://github.com/Him666233/dsh-inline-diff/issues"
   },
   "keywords": [
     "dsh",
+    "dsh-plugin",
     "deepseek-harness",
     "diff",
     "inline-diff",
     "plugin",
     "syntax-highlighting",
     "language-detection"
-  ],
-  "engines": {
-    "dsh": ">=0.2.2-rc.1 <0.3.0"
-  }
+  ]
 }

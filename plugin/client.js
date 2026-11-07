@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-	id: "@local/dsh-inline-diff",
+	id: "@him666233/dsh-inline-diff",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -1583,9 +1583,10 @@ __export(index_exports, {
   inject: () => inject
 });
 module.exports = __toCommonJS(index_exports);
+var import_react6 = require("react");
 
 // src/client/enhanced-shell.jsx
-var import_react2 = require("react");
+var import_react3 = require("react");
 
 // src/client/diff.js
 var CONTEXT_LINES = 3;
@@ -1593,6 +1594,57 @@ var ALIGN_MAX_SIDE_LINES = 4e3;
 var ALIGN_MAX_CELLS = 25e5;
 var INLINE_ROW_CAP = 42;
 var FULL_VIEW_ROW_CAP = 4e3;
+var MAX_MATERIALIZED_LINES = 2e5;
+var MAX_SINGLE_LINE_CHARS = 1e6;
+function measureTextBudget(text) {
+  if (typeof text !== "string" || text === "") return { lines: 0, maxLineLength: 0 };
+  let lines = 1;
+  let current = 0;
+  let maxLineLength = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (text.charCodeAt(index) === 10) {
+      if (current > maxLineLength) maxLineLength = current;
+      current = 0;
+      lines++;
+    } else {
+      current++;
+    }
+  }
+  if (text.charCodeAt(text.length - 1) === 10) {
+    lines--;
+  } else if (current > maxLineLength) {
+    maxLineLength = current;
+  }
+  return { lines, maxLineLength };
+}
+function exceedsMaterializationBudget(metrics) {
+  if (!Array.isArray(metrics)) return false;
+  let lines = 0;
+  let maxLineLength = 0;
+  for (const metric of metrics) {
+    if (metric === null || typeof metric !== "object") continue;
+    if (Number.isFinite(metric.lines)) lines += metric.lines;
+    if (Number.isFinite(metric.maxLineLength) && metric.maxLineLength > maxLineLength) maxLineLength = metric.maxLineLength;
+  }
+  return lines > MAX_MATERIALIZED_LINES || maxLineLength > MAX_SINGLE_LINE_CHARS;
+}
+function truncatedTextModel(beforeText, afterText, oldMetric, newMetric) {
+  return {
+    rows: [],
+    hunks: [],
+    added: 0,
+    removed: 0,
+    oldLineCount: oldMetric.lines,
+    newLineCount: newMetric.lines,
+    coarse: true,
+    truncated: true,
+    hasNumbers: true,
+    beforeText: beforeText ?? "",
+    afterText: afterText ?? "",
+    beforeLineCount: oldMetric.lines,
+    afterLineCount: newMetric.lines
+  };
+}
 function contentLines(text) {
   if (typeof text !== "string" || text === "") return [];
   const body = text.endsWith("\n") ? text.slice(0, -1) : text;
@@ -1676,6 +1728,7 @@ function alignLines(oldLines, newLines) {
 function locateOnce(needle, fileLines) {
   if (!Array.isArray(needle) || needle.length === 0) return -1;
   if (!Array.isArray(fileLines) || fileLines.length < needle.length) return -1;
+  if (needle.length * fileLines.length > 5e6) return -1;
   let found = -1;
   const last = fileLines.length - needle.length;
   outer: for (let i = 0; i <= last; i++) {
@@ -1724,8 +1777,7 @@ function groupHunks(rows) {
           oldEnd: oldCur,
           newStart,
           newEnd: newCur,
-          // Mapping shift of the unchanged band, which is what the annotation
-          // promises: old Lx now reads as new Ly.
+          // 未修改带的行号位移：正是标注所承诺的“旧 Lx 现在读作新 Ly”。
           shift: newStart - oldStart
         };
       }
@@ -1955,6 +2007,7 @@ function annotateIntraLine(rows) {
 var MOVE_MIN_LINES = 2;
 var MOVE_SINGLE_MIN_WIDTH = 12;
 var MOVE_MAX_LINES = 120;
+var MOVE_MAX_CANDIDATE_PAIRS = 25e4;
 function displayWidth(text) {
   let width = 0;
   for (const char of text) {
@@ -2006,6 +2059,7 @@ function detectMoves(hunks) {
     }
   }
   if (deleted.length === 0 || added.length === 0) return 0;
+  if (deleted.length * added.length > MOVE_MAX_CANDIDATE_PAIRS) return 0;
   const candidates = [];
   for (const d2 of deleted) {
     if (!runIsSignificant(d2.core) || d2.core.length > MOVE_MAX_LINES) continue;
@@ -2065,6 +2119,11 @@ function gutterSides(hunk) {
   return { old: hasOld, new: hasNew };
 }
 function diffText(beforeText, afterText) {
+  const oldMetric = measureTextBudget(beforeText);
+  const newMetric = measureTextBudget(afterText);
+  if (exceedsMaterializationBudget([oldMetric, newMetric])) {
+    return truncatedTextModel(beforeText, afterText, oldMetric, newMetric);
+  }
   const oldLines = contentLines(beforeText ?? "");
   const newLines = contentLines(afterText ?? "");
   const { rows, coarse } = alignLines(oldLines, newLines);
@@ -2091,6 +2150,23 @@ function diffText(beforeText, afterText) {
   };
 }
 function fragmentDiff(oldText, newText) {
+  const oldMetric = measureTextBudget(oldText);
+  const newMetric = measureTextBudget(newText);
+  if (exceedsMaterializationBudget([oldMetric, newMetric])) {
+    return {
+      rows: [],
+      hunks: [],
+      added: 0,
+      removed: 0,
+      oldLineCount: oldMetric.lines,
+      newLineCount: newMetric.lines,
+      hasNumbers: false,
+      fragment: true,
+      truncated: true,
+      beforeText: oldText ?? "",
+      afterText: newText ?? ""
+    };
+  }
   const oldLines = contentLines(oldText ?? "");
   const newLines = contentLines(newText ?? "");
   const { rows } = alignLines(oldLines, newLines);
@@ -2211,6 +2287,31 @@ function narrowDiffs(diffs) {
   return out;
 }
 function diffFromMeta(diffs, fileLines) {
+  let metaLines = 0;
+  let metaMaxLine = 0;
+  for (const diff2 of Array.isArray(diffs) ? diffs : []) {
+    if (diff2 === null || typeof diff2 !== "object") continue;
+    const oldMetric = measureTextBudget(diff2.oldText ?? "");
+    const newMetric = measureTextBudget(diff2.newText);
+    metaLines += oldMetric.lines + newMetric.lines;
+    if (oldMetric.maxLineLength > metaMaxLine) metaMaxLine = oldMetric.maxLineLength;
+    if (newMetric.maxLineLength > metaMaxLine) metaMaxLine = newMetric.maxLineLength;
+  }
+  if (metaLines > MAX_MATERIALIZED_LINES || metaMaxLine > MAX_SINGLE_LINE_CHARS) {
+    return {
+      rows: [],
+      hunks: [],
+      added: 0,
+      removed: 0,
+      oldLineCount: null,
+      newLineCount: Array.isArray(fileLines) ? fileLines.length : null,
+      hasNumbers: false,
+      source: "meta",
+      truncated: true,
+      beforeText: null,
+      afterText: null
+    };
+  }
   const hunks = [];
   let added = 0;
   let removed = 0;
@@ -2280,6 +2381,40 @@ function stringArg(args, key) {
   const value = args[key];
   return typeof value === "string" ? value : void 0;
 }
+function firstLine(text) {
+  if (typeof text !== "string" || text === "") return "";
+  const newline = text.indexOf("\n");
+  return newline === -1 ? text : text.slice(0, newline);
+}
+function errorReason(info) {
+  if (info === null || typeof info !== "object") return "";
+  if (typeof info.reason === "string") return info.reason;
+  if (typeof info.code === "string") return info.code;
+  if (typeof info.name === "string") return info.name;
+  return "";
+}
+function contentText(call2, imageMarker) {
+  const parts = [];
+  const blocks = call2 !== null && typeof call2 === "object" && Array.isArray(call2.content) ? call2.content : [];
+  for (const part of blocks) {
+    if (part === null || typeof part !== "object") continue;
+    if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
+    else if (part.type === "image" && typeof imageMarker === "string") parts.push(imageMarker);
+    else if (part.type !== void 0) parts.push(JSON.stringify(part, null, 2));
+  }
+  if (parts.length === 0) {
+    const reason = errorReason(call2 !== null && typeof call2 === "object" ? call2.error : void 0);
+    if (reason !== "") parts.push(reason);
+  }
+  return parts.join("\n");
+}
+function stateKeyOf(status) {
+  if (status === "preparing") return "state.preparing";
+  if (status === "running") return "state.running";
+  if (status === "error") return "state.error";
+  if (status === "stopped") return "state.stopped";
+  return null;
+}
 function deriveCall(block) {
   const settled = block !== null && typeof block === "object" && "kind" in block;
   const call2 = settled ? block.call : block;
@@ -2309,15 +2444,12 @@ function errorMessage(call2) {
   for (const part of call2.content) {
     if (part?.type === "text" && typeof part.text === "string") parts.push(part.text);
   }
-  const info = call2.error;
-  if (parts.length === 0 && info !== null && typeof info === "object") {
-    const reason = typeof info.reason === "string" ? info.reason : typeof info.code === "string" ? info.code : typeof info.name === "string" ? info.name : "";
+  if (parts.length === 0) {
+    const reason = errorReason(call2.error);
     if (reason !== "") parts.push(reason);
   }
   const text = parts.join("\n").trim();
-  if (text === "") return "";
-  const newline = text.indexOf("\n");
-  return newline === -1 ? text : text.slice(0, newline);
+  return text === "" ? "" : firstLine(text);
 }
 function titleKeyOf(toolName) {
   if (toolName === "write") return "title.write";
@@ -2343,9 +2475,9 @@ function resolveOperation(snapshot, call2, toolName) {
   return "update";
 }
 function exceedsAlignBudget(beforeText, afterText) {
-  const oldCount = contentLines(beforeText).length;
-  const newCount = contentLines(afterText).length;
-  return oldCount > ALIGN_MAX_SIDE_LINES || newCount > ALIGN_MAX_SIDE_LINES || oldCount * newCount > ALIGN_MAX_CELLS;
+  const oldMetric = measureTextBudget(beforeText);
+  const newMetric = measureTextBudget(afterText);
+  return oldMetric.lines > ALIGN_MAX_SIDE_LINES || newMetric.lines > ALIGN_MAX_SIDE_LINES || oldMetric.lines * newMetric.lines > ALIGN_MAX_CELLS || exceedsMaterializationBudget([oldMetric, newMetric]);
 }
 function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loading }) {
   const call2 = deriveCall(block);
@@ -2380,15 +2512,19 @@ function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loadin
       const before = typeof snapshot.before === "string" ? snapshot.before : null;
       const after = snapshot.after;
       const operation = resolveOperation(snapshot, call2, resolvedToolName);
+      const oldMetric = measureTextBudget(before ?? "");
+      const newMetric = measureTextBudget(after);
+      const overMaterialization = exceedsMaterializationBudget([oldMetric, newMetric]);
       if (before !== null && before === after) {
         return { ...base, status: "nochange", operation, source: "snapshot", diff: diffText(before, after) };
       }
-      if (before !== null && exceedsAlignBudget(before, after)) {
-        const oldCount = contentLines(before).length;
-        const newCount = contentLines(after).length;
+      if (overMaterialization || before !== null && exceedsAlignBudget(before, after)) {
+        const oldCount = oldMetric.lines;
+        const newCount = newMetric.lines;
         const diffs2 = narrowDiffs(call2.meta?.diffs);
         if (diffs2 !== null) {
-          const located = diffFromMeta(diffs2, contentLines(after));
+          const fileLines = overMaterialization ? null : contentLines(after);
+          const located = diffFromMeta(diffs2, fileLines);
           located.oldLineCount = oldCount;
           located.newLineCount = newCount;
           return {
@@ -2400,13 +2536,13 @@ function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loadin
             diff: located
           };
         }
-        const coarse = diffText(before, after);
+        const coarse = diffText(before ?? "", after);
         return {
           ...base,
           status: "ok",
           operation,
           source: "snapshot",
-          notice: coarse.coarse ? { kind: "coarse", old: oldCount, new: newCount } : { kind: "huge", old: oldCount, new: newCount },
+          notice: coarse.truncated === true ? { kind: "huge", old: oldCount, new: newCount } : coarse.coarse ? { kind: "coarse", old: oldCount, new: newCount } : { kind: "huge", old: oldCount, new: newCount },
           diff: coarse
         };
       }
@@ -2420,7 +2556,7 @@ function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loadin
     }
     const diffs = narrowDiffs(call2.meta?.diffs);
     if (diffs !== null) {
-      const lines = typeof fileText === "string" ? contentLines(fileText) : null;
+      const lines = typeof fileText === "string" && !exceedsMaterializationBudget([measureTextBudget(fileText)]) ? contentLines(fileText) : null;
       const located = diffFromMeta(diffs, lines);
       const hasNumbers = located.hasNumbers === true;
       const snapshotlessTool = resolvedToolName === "str_replace_editor";
@@ -2438,6 +2574,16 @@ function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loadin
       const metaOperation = call2.meta !== null && typeof call2.meta === "object" ? call2.meta.operation : void 0;
       if (typeof content === "string" && metaOperation !== "update") {
         const created = diffText("", content);
+        if (created.truncated === true) {
+          return {
+            ...base,
+            status: "ok",
+            operation: "create",
+            source: "args",
+            notice: { kind: "huge", old: 0, new: created.newLineCount },
+            diff: created
+          };
+        }
         return { ...base, status: "ok", operation: "create", source: "args", diff: created };
       }
       return { ...base, status: "nochange", operation: metaOperation === "create" ? "create" : "update", source: null };
@@ -2472,230 +2618,20 @@ function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loadin
   return { ...base, status: "running" };
 }
 
-// src/client/enhanced-tools.jsx
-var import_react = require("react");
+// src/client/motion.js
+var PULSE_DURATION_MS = 1200;
+function pulsePhase(key) {
+  const text = typeof key === "string" ? key : key === void 0 || key === null ? "" : String(key);
+  if (text === "") return "0ms";
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = hash * 31 + text.charCodeAt(index) >>> 0;
+  }
+  return `${-(hash % PULSE_DURATION_MS)}ms`;
+}
 
-// src/client/settings.js
-var STORAGE_KEY = "dsh-inline-diff.settings.v4";
-var LEGACY_KEY = "dsh-inline-diff.settings.v3";
-var OLDER_KEY = "dsh-inline-diff.settings.v2";
-var RETIRED_KEY = "dsh-inline-diff.settings.v1";
-var DEFAULTS = {
-  /** 'enhanced' = inline diff cards; 'native' = DSH file-mutation rows. */
-  fileCards: "enhanced",
-  /** 'enhanced' = flat expanded Bash/PowerShell rows; 'native' = DSH rows. */
-  shellRows: "native",
-  /** 'enhanced' = other tool calls (generic/details/search/web) expand IN/OUT by default; 'native' = DSH disclosure rows. */
-  toolCalls: "native",
-  /** 'enhanced' = DSH verbose transcript (flat, unfolded); 'native' = don't touch it. */
-  transcript: "native",
-  /** Per-card-type shell tone: 'auto' (theme + host appearance), 'light', 'dark'. */
-  fileShellTone: "auto",
-  shellShellTone: "auto",
-  toolShellTone: "auto",
-  /** Per-card-type inner tone: 'auto' (official light/dark), 'light', 'dark', 'same' (= shell). */
-  fileInnerTone: "auto",
-  shellInnerTone: "auto",
-  toolInnerTone: "auto",
-  /** Syntax highlighting for diff code (detection/palette live in languages.js). */
-  syntaxHighlight: true,
-  /** Language badge style: 'short' code, 'full' name, or 'hidden'. */
-  languageBadge: "short",
-  /** Undetected language: 'show' a neutral "unknown" badge, or 'hidden'. */
-  unknownLanguage: "show",
-  /** 'on' = highlight color + font emphasis (bold keywords, italic comments); 'off' = color only. */
-  syntaxEmphasis: "on"
-};
-var LANGUAGE_BADGE_VALUES = ["short", "full", "hidden"];
-var UNKNOWN_LANGUAGE_VALUES = ["show", "hidden"];
-var SYNTAX_EMPHASIS_VALUES = ["on", "off"];
-var SHELL_TONE_VALUES = ["auto", "light", "dark"];
-var INNER_TONE_VALUES = ["auto", "light", "dark", "same"];
-var listeners = /* @__PURE__ */ new Set();
-var previousTranscript;
-var transcriptForm;
-var configFormsRef;
-var state = load();
-persist();
-function normalizeMode(value) {
-  if (value === "enhanced" || value === "native") return value;
-  if (typeof value === "string" && value !== "") return "enhanced";
-  return void 0;
-}
-function normalizeEnum(value, allowed, fallback) {
-  return typeof value === "string" && allowed.includes(value) ? value : fallback;
-}
-function normalizeBoolean(value, fallback) {
-  return typeof value === "boolean" ? value : fallback;
-}
-function normalizeShellTone(value) {
-  return normalizeEnum(value, SHELL_TONE_VALUES, "auto");
-}
-function normalizeInnerTone(value) {
-  return normalizeEnum(value, INNER_TONE_VALUES, "auto");
-}
-function startAppearanceTracking() {
-  try {
-    const doc = globalThis.document;
-    const root = doc?.documentElement;
-    const body = doc?.body ?? null;
-    if (root === void 0 || root === null || typeof MutationObserver !== "function") return () => {
-    };
-    const styleOf = (node) => node === null ? "" : String(globalThis.getComputedStyle?.(node)?.colorScheme || "");
-    const apply2 = () => {
-      const tokens = [String(root.style.colorScheme || ""), styleOf(root), styleOf(body)].filter((part) => part !== "").join(" ").toLowerCase();
-      let mode;
-      if (tokens.includes("dark")) mode = "dark";
-      else if (tokens.includes("light")) mode = "light";
-      else if (body !== null && body.hasAttribute("data-ds-dark-theme")) mode = "dark";
-      else mode = globalThis.matchMedia?.("(prefers-color-scheme: dark)")?.matches === true ? "dark" : "light";
-      if (root.dataset.dshInlineDiffAppearance !== mode) root.dataset.dshInlineDiffAppearance = mode;
-      if (body !== null && body.dataset.dshInlineDiffAppearance !== mode) body.dataset.dshInlineDiffAppearance = mode;
-    };
-    apply2();
-    const observer = new MutationObserver(apply2);
-    observer.observe(root, { attributes: true, attributeFilter: ["style", "class"] });
-    if (body !== null) {
-      observer.observe(body, { attributes: true, attributeFilter: ["style", "class", "data-ds-dark-theme"] });
-    }
-    const media = globalThis.matchMedia?.("(prefers-color-scheme: dark)");
-    if (media !== null && media !== void 0 && typeof media.addEventListener === "function") media.addEventListener("change", apply2);
-    return () => {
-      observer.disconnect();
-      if (media !== null && media !== void 0 && typeof media.removeEventListener === "function") media.removeEventListener("change", apply2);
-    };
-  } catch {
-    return () => {
-    };
-  }
-}
-function load() {
-  try {
-    const storage = globalThis.localStorage;
-    if (storage === void 0 || storage === null) return { ...DEFAULTS };
-    let raw = storage.getItem(STORAGE_KEY);
-    if (typeof raw !== "string" || raw === "") raw = storage.getItem(LEGACY_KEY);
-    if (typeof raw !== "string" || raw === "") raw = storage.getItem(OLDER_KEY);
-    if (typeof raw !== "string" || raw === "") return { ...DEFAULTS };
-    const parsed = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { ...DEFAULTS };
-    const next = { ...DEFAULTS };
-    const fileCards = normalizeMode(parsed.fileCards);
-    const shellRows = normalizeMode(parsed.shellRows);
-    const toolCalls = normalizeMode(parsed.toolCalls);
-    const transcript = normalizeMode(parsed.transcript);
-    if (fileCards !== void 0) next.fileCards = fileCards;
-    if (shellRows !== void 0) next.shellRows = shellRows;
-    if (toolCalls !== void 0) next.toolCalls = toolCalls;
-    if (transcript !== void 0) next.transcript = transcript;
-    if (parsed.fileShellTone !== void 0) next.fileShellTone = normalizeShellTone(parsed.fileShellTone);
-    if (parsed.shellShellTone !== void 0) next.shellShellTone = normalizeShellTone(parsed.shellShellTone);
-    if (parsed.toolShellTone !== void 0) next.toolShellTone = normalizeShellTone(parsed.toolShellTone);
-    if (parsed.fileInnerTone !== void 0) next.fileInnerTone = normalizeInnerTone(parsed.fileInnerTone);
-    if (parsed.shellInnerTone !== void 0) next.shellInnerTone = normalizeInnerTone(parsed.shellInnerTone);
-    if (parsed.toolInnerTone !== void 0) next.toolInnerTone = normalizeInnerTone(parsed.toolInnerTone);
-    next.syntaxHighlight = normalizeBoolean(parsed.syntaxHighlight, DEFAULTS.syntaxHighlight);
-    next.languageBadge = normalizeEnum(parsed.languageBadge, LANGUAGE_BADGE_VALUES, DEFAULTS.languageBadge);
-    next.unknownLanguage = normalizeEnum(parsed.unknownLanguage, UNKNOWN_LANGUAGE_VALUES, DEFAULTS.unknownLanguage);
-    next.syntaxEmphasis = normalizeEnum(parsed.syntaxEmphasis, SYNTAX_EMPHASIS_VALUES, DEFAULTS.syntaxEmphasis);
-    if (typeof parsed.previousTranscript === "string" && parsed.previousTranscript !== "") {
-      previousTranscript = parsed.previousTranscript;
-    }
-    return next;
-  } catch {
-    return { ...DEFAULTS };
-  }
-}
-function persist() {
-  try {
-    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({
-      ...state,
-      ...previousTranscript === void 0 ? {} : { previousTranscript }
-    }));
-    globalThis.localStorage?.removeItem(LEGACY_KEY);
-    globalThis.localStorage?.removeItem(OLDER_KEY);
-    globalThis.localStorage?.removeItem(RETIRED_KEY);
-  } catch {
-  }
-}
-function emit() {
-  for (const listener of listeners) listener();
-}
-function getSettings() {
-  return state;
-}
-function subscribeSettings(listener) {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-function updateSettings(patch) {
-  state = { ...state, ...patch };
-  persist();
-  emit();
-}
-async function resetSettings() {
-  const wasEnhanced = state.transcript === "enhanced";
-  state = { ...DEFAULTS };
-  previousTranscript = void 0;
-  persist();
-  emit();
-  try {
-    if (state.transcript === "enhanced") await adoptTranscriptPreference();
-    else if (wasEnhanced) await setTranscriptPreference("native");
-  } catch {
-  }
-}
-function initSettings(configForms) {
-  configFormsRef = configForms;
-  void adoptTranscriptPreference();
-}
-function chatForm() {
-  if (configFormsRef === void 0) throw new Error("configForms is not available");
-  if (transcriptForm === void 0) transcriptForm = configFormsRef.get("ui-chat");
-  return transcriptForm;
-}
-function currentTranscriptMode() {
-  try {
-    return chatForm().getSnapshot().value?.transcriptView;
-  } catch {
-    return void 0;
-  }
-}
-async function setTranscriptPreference(mode) {
-  const form = chatForm();
-  if (mode === "enhanced") {
-    const current2 = form.getSnapshot().value?.transcriptView;
-    if (typeof current2 === "string" && current2 !== "verbose" && current2 !== "normal" && current2 !== "expanded") {
-      previousTranscript = current2;
-    } else if (typeof current2 !== "string") {
-      previousTranscript = "standard";
-    }
-    updateSettings({ transcript: "enhanced" });
-    await form.set("transcriptView", "verbose");
-    return;
-  }
-  updateSettings({ transcript: "native" });
-  const current = form.getSnapshot().value?.transcriptView;
-  if (current === "verbose") {
-    await form.set("transcriptView", previousTranscript ?? "standard");
-  }
-}
-async function adoptTranscriptPreference() {
-  if (state.transcript !== "enhanced") return;
-  try {
-    if (configFormsRef === void 0) return;
-    const form = chatForm();
-    const current = form.getSnapshot().value?.transcriptView;
-    if (current !== "verbose") {
-      if (typeof current === "string" && current !== "normal" && current !== "expanded") previousTranscript = current;
-      await form.set("transcriptView", "verbose");
-      persist();
-    }
-  } catch {
-  }
-}
+// src/client/enhanced-tools.jsx
+var import_react2 = require("react");
 
 // src/client/tool-status.js
 var INPUT_FAILURE_CODES = Object.freeze([
@@ -2794,10 +2730,681 @@ function shellSectionStates(call2, exitFailed) {
   }
 }
 
+// src/client/use-settings.js
+var import_react = require("react");
+
+// src/client/locales.js
+var NS = "inline-diff";
+var SUPPORTED_LANGUAGES = Object.freeze(["zh", "en"]);
+var LANGUAGE_SETTINGS = Object.freeze(["zh", "en", "auto"]);
+var DEFAULT_LANGUAGE = "zh";
+var zh = {
+  "title.edit": "编辑",
+  "title.write": "写入",
+  "title.strReplace": "替换编辑",
+  "langUnknown": "未知语言",
+  "langPlaintext": "纯文本",
+  "langTitle": "语言：{name}",
+  "op.create": "新建文件",
+  "op.update": "更新文件",
+  "op.overwrite": "覆盖写入",
+  "state.preparing": "准备中",
+  "state.running": "执行中",
+  "state.error": "失败",
+  "state.stopped": "已中止",
+  "hunks": "{n} 处修改",
+  "hunk.i": "修改点 {i}/{n}",
+  "gutterOld": "旧",
+  "gutterNew": "新",
+  "noChanges": "内容无变化",
+  "noDiff": "没有可展示的差异",
+  "zoom": "放大",
+  "collapse": "收起",
+  "expand": "展开",
+  "modal.title": "修改对比",
+  "tab.hunks": "变更块",
+  "tab.full": "全文对照",
+  "close": "关闭",
+  "before": "修改前",
+  "after": "修改后",
+  "oldFile": "旧文件 {n} 行",
+  "newFile": "新文件 {n} 行",
+  "gapUnchanged": "{n} 行未修改",
+  "shift": "行号顺延 {delta}",
+  "shiftDown": "行号顺延 −{delta}",
+  "movedTo": "移至 新 L{line}",
+  "movedToRange": "移至 新 L{from}–L{to}",
+  "movedFrom": "移自 旧 L{line}",
+  "movedFromRange": "移自 旧 L{from}–L{to}",
+  "inlineMore": "另有 {n} 行未展开，点击「放大」查看全部",
+  "openViewer": "左右对照",
+  "preview": "执行中的预览（精确行号将在完成后标注）",
+  "lineUnknown": "行号待定",
+  "snapshotSource": "按执行快照精确对照",
+  "argsSource": "按调用参数重建",
+  "locatedSource": "按文件定位行号",
+  "failedSummary": "文件修改失败",
+  "loading": "读取文件上下文…",
+  "fullTooLarge": "文件较大，全文对照不可用",
+  "fullHistoryUnavailable": "历史回放缺少修改前全文，全文对照不可用",
+  "fullLocateUnavailable": "历史回放缺少修改前全文，且行号无法定位，全文对照不可用",
+  "fullToolUnavailable": "该工具调用不保存执行快照，全文对照不可用",
+  "noticeHistory": "这是历史回放：只能读取修改块和行号，修改前全文已不可用，因此「全文对照」置灰；当前实时修改的卡片仍可全文对照。",
+  "noticeLocate": "这是历史回放：修改前全文已不可用，且当前文件已变化、无法定位行号；只展示修改块，行号标记为待定。",
+  "noticeTool": "该工具调用不保存执行快照：只能展示修改块与行号，「全文对照」不可用。",
+  "noticeToolLocate": "该工具调用不保存执行快照，且当前文件已变化、无法定位行号；只展示修改块，行号标记为待定。",
+  "noticeHuge": "文件较大（旧 {old} 行 / 新 {new} 行），已切换为差异块模式：保留逐行号与修改点，移动识别与「全文对照」不可用。",
+  "noticeTruncated": "文件过大，已启用截断展示：行数与增删统计仍准确，逐行内容与全文对照不可用。",
+  "noticeCoarse": "文件较大，已使用粗粒度对齐：颜色与行号仍准确，移动识别已关闭。",
+  "noticeLinesPending": "未能读取当前文件，行号标记为待定；差异内容仍按工具记录展示。",
+  "openFile": "在文件面板中打开",
+  "hunkHeader": "旧 {old} → 新 {new}",
+  "hunkHeaderNew": "新文件 {new}",
+  "hunkHeaderDel": "删除 旧 {old}",
+  "added": "新增 {n} 行",
+  "removed": "删除 {n} 行",
+  "unknownRange": "行号待定",
+  "fullNote": "共 {n} 行；超出显示上限的部分已截断",
+  // 单行超长（如 minified 文件）时的展示截断 title 提示：n 为该行总字符数。
+  "lineTruncated": "该行共 {n} 个字符，已截断显示",
+  "emptyFile": "（空文件）",
+  "settings.nav": "内联差异",
+  "settings.short": "差异样式",
+  "settings.title": "内联差异 · 显示样式",
+  "settings.description": "只影响 Web 界面的展示方式，不改变会话记录、模型输入或工具执行。「展开风格」采用平板、透明的输出效果：文件修改显示逐次内联差异，命令与其它工具默认展开 IN/OUT；「DSH 原生」保持官方样式。",
+  // 插件级语言选择（1.3.0）。这一行的文案本身也按“当前插件语言”渲染，
+  // 因此切换语言后立刻就能看出效果。
+  "settings.language": "语言",
+  "settings.languageDesc": "插件界面的显示语言。「跟随 DSH」会跟随 DSH 的语言设置：DSH 为中文时显示中文，其他语言时显示英文。切换后立即生效，无需刷新。",
+  "settings.languageZh": "中文",
+  "settings.languageEn": "English",
+  "settings.languageAuto": "跟随 DSH",
+  // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案。
+  "originality.title": "原创声明",
+  "originality.body": "本项目（DSH Inline Diff）完全原创，与 {repo} 以及任何其他同名插件或仓库均无任何关联。部分功能雷同纯属巧合；实现方式与代码效果完全不同；开发时没有参考任何同类插件；本项目不是对方的衍生作品或复刻作品。",
+  "settings.fileCards": "文件修改卡片",
+  "settings.fileCardsDesc": "edit / write / str_replace_editor 工具调用在对话中的展示方式。展开风格显示逐次内联差异卡片，DSH 原生显示官方文件修改行。",
+  "settings.syntax": "语法高亮",
+  "settings.syntaxDesc": "按扩展名、特殊文件名（如 Dockerfile、Makefile）或脚本首行（shebang）识别文件语言，只改变代码文字颜色，不影响文件内容与差异标记。高亮配色刻意避开红色与绿色，避免与新增/删除标记混淆。",
+  "settings.syntaxOn": "开启",
+  "settings.syntaxOff": "关闭",
+  "settings.languageBadge": "语言标识",
+  "settings.languageBadgeDesc": "显示在卡片标题栏的文件路径旁，放大弹窗中也会显示。只占一小枚徽章，不改动现有布局，窄屏时自然截断。选择「隐藏」会隐藏全部语言徽章（含纯文本与未知语言）。",
+  "settings.badgeShort": "短代码",
+  "settings.badgeFull": "全名",
+  "settings.badgeHidden": "隐藏",
+  "settings.unknownLanguage": "未知语言",
+  "settings.unknownLanguageDesc": "识别不到语言时的处理：显示「未知语言」徽章，或完全不显示语言标识。此时不做语法高亮，代码使用默认前景色（跟随当前浅色/深色外观），新增/删除标记不受影响。",
+  "settings.unknownShow": "显示“未知语言”",
+  "settings.unknownHidden": "不显示",
+  "settings.syntaxEmphasis": "字体强调",
+  "settings.syntaxEmphasisDesc": "在配色之外给关键词、类型与函数名加粗，注释用斜体；关闭后只用颜色区分，观感更克制。",
+  "settings.emphasisOn": "颜色 + 字体样式",
+  "settings.emphasisOff": "仅颜色",
+  "settings.supportedLanguages": "支持的语言",
+  "settings.supportedLanguagesNote": "已支持 {n} 种语言（按扩展名、特殊文件名与脚本首行识别）。语法高亮配色刻意避开红色与绿色，避免和新增/删除标记混淆。",
+  "settings.syntaxToggleNote": "关闭高亮后，代码仍按当前浅色/深色外观使用默认前景色显示。",
+  "settings.shellRows": "命令执行行",
+  "settings.shellRowsDesc": "bash / pwsh / win_bash 工具调用的展示方式。展开风格默认展开 IN/OUT，DSH 原生显示官方命令行。",
+  "settings.shellTone": "外壳配色",
+  "settings.innerTone": "内部配色",
+  "settings.toneAutoShell": "自动（主题+外观）",
+  "settings.toneAutoInner": "自动（官方外观）",
+  "settings.toneLight": "浅色",
+  "settings.toneDark": "深色",
+  "settings.toneSameShell": "与外壳一致",
+  "settings.toolCalls": "其它工具调用",
+  "settings.toolCallsDesc": "普通、详情、搜索与网页类工具调用（查询运行时、任务与会话、grep / glob、web_search / web_fetch 等）。展开风格默认展开 IN/OUT 并保留折叠按钮；读取、待办、提问、图片等富结果卡片保持原生。开启本项会即时生效，并自动把「过程折叠」切换为不折叠，否则展开行会被 DSH 折叠组遮住。",
+  "settings.toolCallsNeedsFlat": "提示：当前「过程折叠」为 DSH 原生，已完成的工具行会被收进折叠组；要直接看到展开效果，请把「过程折叠」也切换为「不折叠」。",
+  "settings.transcript": "过程折叠（整份对话）",
+  "settings.transcriptEnhancedNote": "启用 DSH 官方的 Verbose 对话记录偏好：整轮过程不折叠、工具行平板展示。设置会持久保存，可在 DSH 设置 → 通用 → 对话记录样式中恢复。",
+  "settings.transcriptNativeNote": "保持你当前在 DSH 中的对话记录偏好，插件不会改动它。",
+  "settings.styleEnhanced": "展开风格",
+  "settings.styleNative": "DSH 原生",
+  "settings.flat": "不折叠",
+  "settings.subagentNote": "子代理会话与主会话共用这套设置；差异快照按各自 Session 独立记录，互不影响。",
+  "settings.dsmCurrent": "当前 DSH 对话记录模式：{mode}",
+  "settings.reset": "恢复默认",
+  "settings.saving": "正在保存…",
+  "settings.live": "设置自动生效",
+  "shell.in": "IN",
+  "shell.out": "OUT",
+  // 命令行退出码 / 信号徽标（[exit code: N] 标记文本由 Host 产生，这里是 UI 文案）。
+  "shell.exit": "退出码 {code}",
+  "shell.exitNull": "退出码未知",
+  "shell.signal": "信号 {name}",
+  "tool.in": "IN",
+  "tool.out": "OUT",
+  "tool.fallbackTitle": "工具调用",
+  "tool.unknownName": "工具",
+  "tool.image": "[图片]",
+  "readFrom": "L {line} 起",
+  "inspectTrajectory": "在轨迹中查看",
+  "inspectShort": "轨迹",
+  "gapRange": "旧 {old} → 新 {new}",
+  "search.matches": "{n} 处匹配",
+  "search.files": "{n} 个文件",
+  "web.sources": "{n} 个来源",
+  "web.status": "HTTP {code}",
+  "toolTitle.create_goal": "创建目标",
+  "toolTitle.get_goal": "查看目标",
+  "toolTitle.update_goal": "更新目标",
+  "toolTitle.schedule_create": "创建定时任务",
+  "toolTitle.schedule_list": "查看定时任务",
+  "toolTitle.schedule_view": "查看定时任务详情",
+  "toolTitle.schedule_edit": "编辑定时任务",
+  "toolTitle.schedule_delete": "删除定时任务",
+  "toolTitle.schedule_update": "更新定时任务",
+  "toolTitle.grep": "搜索文件内容",
+  "toolTitle.glob": "搜索文件",
+  "toolTitle.web_search": "网页搜索",
+  "toolTitle.web_fetch": "抓取网页",
+  "toolTitle.cordis_inspect_list": "检查提供方",
+  "toolTitle.cordis_inspect_query": "查询运行时",
+  "toolTitle.cordis_inspect_self": "检查动态插件",
+  "toolTitle.workflow": "运行工作流",
+  "toolTitle.ralph": "运行循环工作流",
+  "toolTitle.session_event_read": "读取事件",
+  "toolTitle.session_event_search": "搜索事件",
+  "toolTitle.session_event_trace": "追踪事件",
+  "toolTitle.session_search": "搜索会话",
+  "toolTitle.session_trace": "追踪会话",
+  "toolTitle.list_subagent_models": "查看可用模型",
+  "toolTitle.subagent": "创建子智能体",
+  "toolTitle.list_agents": "查看子智能体",
+  "toolTitle.send_message": "发送消息",
+  "toolTitle.interrupt_agent": "中断智能体",
+  "toolTitle.spawn_teammate": "创建队友",
+  "toolTitle.wait_agent": "等待智能体",
+  "toolTitle.job_list": "查看后台任务",
+  "toolTitle.job_output": "读取任务输出",
+  "toolTitle.job_kill": "取消后台任务",
+  "toolTitle.terminal_open": "创建终端",
+  "toolTitle.terminal_read": "读取终端",
+  "toolTitle.terminal_list": "查看终端",
+  "toolTitle.terminal_signal": "发送终端信号",
+  "toolTitle.terminal_close": "关闭终端",
+  "toolTitle.lsp": "语言服务",
+  "toolTitle.team_task_create": "创建团队任务",
+  "toolTitle.team_task_get": "查看团队任务",
+  "toolTitle.team_task_update": "更新团队任务",
+  "toolTitle.team_task_list": "查看团队任务列表"
+};
+var en = {
+  "title.edit": "Edit",
+  "title.write": "Write",
+  "title.strReplace": "Replace",
+  "langUnknown": "Unknown",
+  "langPlaintext": "Plain text",
+  "langTitle": "Language: {name}",
+  "op.create": "New file",
+  "op.update": "Updated file",
+  "op.overwrite": "Overwritten",
+  "state.preparing": "Preparing",
+  "state.running": "Running",
+  "state.error": "Failed",
+  "state.stopped": "Stopped",
+  "hunks": "{n} changes",
+  "hunk.i": "Change {i}/{n}",
+  "gutterOld": "OLD",
+  "gutterNew": "NEW",
+  "noChanges": "No content change",
+  "noDiff": "No diff to show",
+  "zoom": "Expand",
+  "collapse": "Collapse",
+  "expand": "Expand",
+  "modal.title": "Change comparison",
+  "tab.hunks": "Changes",
+  "tab.full": "Whole file",
+  "close": "Close",
+  "before": "Before",
+  "after": "After",
+  "oldFile": "Before · {n} lines",
+  "newFile": "After · {n} lines",
+  "gapUnchanged": "{n} unchanged lines",
+  "shift": "line numbers shifted {delta}",
+  "shiftDown": "line numbers shifted −{delta}",
+  "movedTo": "moved to new L{line}",
+  "movedToRange": "moved to new L{from}–L{to}",
+  "movedFrom": "moved from old L{line}",
+  "movedFromRange": "moved from old L{from}–L{to}",
+  "inlineMore": "{n} more lines not shown — use “Expand” to see all",
+  "openViewer": "Side-by-side",
+  "preview": "Live preview — exact line numbers appear when the edit settles",
+  "lineUnknown": "line numbers pending",
+  "snapshotSource": "Exact comparison from the execution snapshot",
+  "argsSource": "Rebuilt from the call arguments",
+  "locatedSource": "Line numbers located in the file",
+  "failedSummary": "File change failed",
+  "loading": "Reading file context…",
+  "fullTooLarge": "File is large — whole-file comparison unavailable",
+  "fullHistoryUnavailable": "Before-image text is unavailable for replayed history; whole-file comparison is unavailable",
+  "fullLocateUnavailable": "Before-image text and line numbers are unavailable for replayed history; whole-file comparison is unavailable",
+  "fullToolUnavailable": "This tool call keeps no execution snapshot; whole-file comparison is unavailable",
+  "noticeHistory": "Replayed history: only the changed hunks and line numbers are available, so the whole-file tab is disabled. Cards from the live session still support it.",
+  "noticeLocate": "Replayed history: the before-image is unavailable and the current file no longer matches that edit, so line numbers cannot be located; only the changed hunks are shown.",
+  "noticeTool": "This tool call keeps no execution snapshot: only the changed hunks and line numbers are shown, so whole-file comparison is unavailable.",
+  "noticeToolLocate": "This tool call keeps no execution snapshot and the current file no longer matches that edit, so line numbers cannot be located; only the changed hunks are shown.",
+  "noticeHuge": "Large file (before: {old} lines, after: {new} lines) — switched to changed-hunk mode: line numbers and hunks are kept; moved-block detection and the whole-file tab are unavailable.",
+  "noticeTruncated": "File is too large — display truncated: line counts and added/removed totals stay accurate; per-line content and the whole-file comparison are unavailable.",
+  "noticeCoarse": "Large file — coarse alignment in use. Coloring and line numbers stay accurate; moved-block detection is off.",
+  "noticeLinesPending": "The current file could not be read, so line numbers are pending; the recorded diff is still shown.",
+  "openFile": "Open in file panel",
+  "hunkHeader": "old {old} → new {new}",
+  "hunkHeaderNew": "new file {new}",
+  "hunkHeaderDel": "deleted old {old}",
+  "added": "{n} added",
+  "removed": "{n} removed",
+  "unknownRange": "line numbers pending",
+  "fullNote": "{n} lines total; display capped",
+  // 单行超长（如 minified 文件）时的展示截断 title 提示（英文）。
+  "lineTruncated": "Line has {n} characters; display truncated",
+  "emptyFile": "(empty file)",
+  "settings.nav": "Inline Diff",
+  "settings.short": "Diff style",
+  "settings.title": "Inline Diff · Display",
+  "settings.description": "Presentation only: session records, model input, and tool execution are unchanged. The expanded style gives flat, transparent output — per-edit inline diffs for file changes and IN/OUT expanded by default for commands and other tools; DSH native keeps the stock presentation.",
+  // 插件级语言选择（1.3.0）：英文界面下的同一组选项。
+  "settings.language": "Language",
+  "settings.languageDesc": "Display language for this plugin. “Follow DSH” mirrors the DSH language setting: Chinese shows Chinese and any other language shows English. The switch applies immediately — no reload needed.",
+  "settings.languageZh": "中文",
+  "settings.languageEn": "English",
+  "settings.languageAuto": "Follow DSH",
+  // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案（英文）。
+  "originality.title": "Originality",
+  "originality.body": "This project (DSH Inline Diff) is a fully original work and has no affiliation with {repo} or with any other plugin or repository of a similar name. Any similarity in functionality is purely coincidental; the implementation and code behavior are entirely different; no reference was made to any such plugin during development; and this project is neither a derivative nor a replica of it.",
+  "settings.fileCards": "File-change cards",
+  "settings.fileCardsDesc": "How edit / write / str_replace_editor calls render. Expanded shows per-edit inline diff cards; DSH native shows the stock file-mutation row.",
+  "settings.syntax": "Syntax highlighting",
+  "settings.syntaxDesc": "Detects the file language from its extension, special filenames (Dockerfile, Makefile, …), or a script shebang, and only changes code text colors — file contents and diff markers are untouched. Highlight colors deliberately avoid red and green so they never read as added/removed markers.",
+  "settings.syntaxOn": "On",
+  "settings.syntaxOff": "Off",
+  "settings.languageBadge": "Language badge",
+  "settings.languageBadgeDesc": "Shown next to the file path in the card title bar and in the expanded dialog. A small badge that does not disturb the existing layout and truncates naturally on narrow screens. “Hidden” hides every language badge, including the plain-text and unknown-language markers.",
+  "settings.badgeShort": "Short code",
+  "settings.badgeFull": "Full name",
+  "settings.badgeHidden": "Hidden",
+  "settings.unknownLanguage": "Unknown language",
+  "settings.unknownLanguageDesc": "What to show when the language cannot be detected: a neutral “Unknown” badge, or no badge at all. Syntax highlighting is skipped in that case, so code uses the default foreground color for the current light/dark appearance; added/removed markers are unaffected.",
+  "settings.unknownShow": "Show “Unknown”",
+  "settings.unknownHidden": "Hide",
+  "settings.syntaxEmphasis": "Font emphasis",
+  "settings.syntaxEmphasisDesc": "Beyond color, bold keywords, types, and function names and italicize comments; turning it off keeps color only for a more restrained look.",
+  "settings.emphasisOn": "Color + font style",
+  "settings.emphasisOff": "Color only",
+  "settings.supportedLanguages": "Supported languages",
+  "settings.supportedLanguagesNote": "Supports {n} languages (detected by extension, special filenames, and script shebang). Highlight colors deliberately avoid red and green so they are never confused with added/removed markers.",
+  "settings.syntaxToggleNote": "When highlighting is off, code keeps the default foreground color for the current light/dark appearance.",
+  "settings.shellRows": "Command rows",
+  "settings.shellRowsDesc": "How bash / pwsh / win_bash calls render. Expanded shows IN/OUT open; DSH native shows the stock command row.",
+  "settings.shellTone": "Shell tone",
+  "settings.innerTone": "Inner tone",
+  "settings.toneAutoShell": "Auto (theme + appearance)",
+  "settings.toneAutoInner": "Auto (official appearance)",
+  "settings.toneLight": "Light",
+  "settings.toneDark": "Dark",
+  "settings.toneSameShell": "Same as shell",
+  "settings.toolCalls": "Other tool calls",
+  "settings.toolCallsDesc": "Generic, details, search, and web tool calls such as runtime queries, session/job queries, grep / glob, and web_search / web_fetch. Expanded shows IN/OUT open with a fold button; rich cards (read, todo, questions, images) stay native. Enabling this applies instantly and also unfolds completed turns, otherwise DSH folding would hide the expanded rows.",
+  "settings.toolCallsNeedsFlat": "Note: process folding is DSH-native, so completed tool rows stay inside folded groups. Switch Process folding to Unfolded to see the expanded rows directly.",
+  "settings.transcript": "Process folding (whole chat)",
+  "settings.transcriptEnhancedNote": "Uses DSH's official Verbose transcript preference: completed turns stay unfolded and tool rows stay flat. It is persisted and can be restored in DSH Settings → General → Transcript.",
+  "settings.transcriptNativeNote": "Keep your current DSH transcript preference; the plugin does not modify it.",
+  "settings.styleEnhanced": "Expanded",
+  "settings.styleNative": "DSH native",
+  "settings.flat": "Unfolded",
+  "settings.subagentNote": "Subagent sessions use the same settings; diff snapshots are recorded per Session and never interfere.",
+  "settings.dsmCurrent": "Current DSH transcript mode: {mode}",
+  "settings.reset": "Reset to defaults",
+  "settings.saving": "Saving…",
+  "settings.live": "Settings apply automatically",
+  "shell.in": "IN",
+  "shell.out": "OUT",
+  // 命令行退出码 / 信号徽标（英文）。
+  "shell.exit": "exit {code}",
+  "shell.exitNull": "exit code unknown",
+  "shell.signal": "signal {name}",
+  "tool.in": "IN",
+  "tool.out": "OUT",
+  "tool.fallbackTitle": "Tool call",
+  "tool.unknownName": "Tool",
+  "tool.image": "[image]",
+  "readFrom": "from L {line}",
+  "inspectTrajectory": "Inspect in trajectory",
+  "inspectShort": "Trace",
+  "gapRange": "old {old} → new {new}",
+  "search.matches": "{n} matches",
+  "search.files": "{n} files",
+  "web.sources": "{n} sources",
+  "web.status": "HTTP {code}",
+  "toolTitle.create_goal": "Create goal",
+  "toolTitle.get_goal": "Get goal",
+  "toolTitle.update_goal": "Update goal",
+  "toolTitle.schedule_create": "Create schedule",
+  "toolTitle.schedule_list": "List schedules",
+  "toolTitle.schedule_view": "View schedule",
+  "toolTitle.schedule_edit": "Edit schedule",
+  "toolTitle.schedule_delete": "Delete schedule",
+  "toolTitle.schedule_update": "Update schedule",
+  "toolTitle.grep": "Search file contents",
+  "toolTitle.glob": "Find files",
+  "toolTitle.web_search": "Web search",
+  "toolTitle.web_fetch": "Fetch page",
+  "toolTitle.cordis_inspect_list": "Inspect providers",
+  "toolTitle.cordis_inspect_query": "Query runtime",
+  "toolTitle.cordis_inspect_self": "Inspect plugins",
+  "toolTitle.workflow": "Run workflow",
+  "toolTitle.ralph": "Run loop workflow",
+  "toolTitle.session_event_read": "Read event",
+  "toolTitle.session_event_search": "Search events",
+  "toolTitle.session_event_trace": "Trace event",
+  "toolTitle.session_search": "Search sessions",
+  "toolTitle.session_trace": "Trace session",
+  "toolTitle.list_subagent_models": "List models",
+  "toolTitle.subagent": "Create subagent",
+  "toolTitle.list_agents": "List subagents",
+  "toolTitle.send_message": "Send message",
+  "toolTitle.interrupt_agent": "Interrupt agent",
+  "toolTitle.spawn_teammate": "Spawn teammate",
+  "toolTitle.wait_agent": "Wait agent",
+  "toolTitle.job_list": "List jobs",
+  "toolTitle.job_output": "Read job output",
+  "toolTitle.job_kill": "Kill job",
+  "toolTitle.terminal_open": "Open terminal",
+  "toolTitle.terminal_read": "Read terminal",
+  "toolTitle.terminal_list": "List terminals",
+  "toolTitle.terminal_signal": "Signal terminal",
+  "toolTitle.terminal_close": "Close terminal",
+  "toolTitle.lsp": "Language service",
+  "toolTitle.team_task_create": "Create team task",
+  "toolTitle.team_task_get": "Get team task",
+  "toolTitle.team_task_update": "Update team task",
+  "toolTitle.team_task_list": "List team tasks"
+};
+var dicts = { zh, en };
+
+// src/client/settings.js
+var STORAGE_KEY = "dsh-inline-diff.settings.v4";
+var LEGACY_KEY = "dsh-inline-diff.settings.v3";
+var OLDER_KEY = "dsh-inline-diff.settings.v2";
+var RETIRED_KEY = "dsh-inline-diff.settings.v1";
+var DEFAULTS = {
+  /**
+   * 插件级界面语言（1.3.0 新增）：
+   *   'zh'（默认）中文；'en' 英文；'auto' 跟随 DSH 全局语言（DSH 中文→中文，
+   *   其它语言→英文）。
+   * 这是插件自己的显示偏好，与 DSH 的全局 locale 相互独立：客户端文案从
+   * src/client/locales.js 取字典，由插件语言选择；宿主渲染的 slot label 在
+   * 语言变化时重新注册。旧存档没有该字段，迁移为默认值 'zh'。
+   */
+  language: DEFAULT_LANGUAGE,
+  /** 'enhanced' = 内联差异卡片；'native' = DSH 原生文件修改行。 */
+  fileCards: "enhanced",
+  /** 'enhanced' = 平铺展开的 Bash/PowerShell 行；'native' = DSH 原生行。 */
+  shellRows: "native",
+  /** 'enhanced' = 其它工具调用（通用/详情/搜索/网页）默认展开 IN/OUT；'native' = DSH 折叠行。 */
+  toolCalls: "native",
+  /** 'enhanced' = 使用 DSH verbose 对话记录（平铺、不折叠）；'native' = 不改动。 */
+  transcript: "native",
+  /** 每类卡片的外壳配色：'auto'（主题 + 宿主外观）、'light'、'dark'。 */
+  fileShellTone: "auto",
+  shellShellTone: "auto",
+  toolShellTone: "auto",
+  /** 每类卡片的内部配色：'auto'（官方浅/深色）、'light'、'dark'、'same'（与外壳一致）。 */
+  fileInnerTone: "auto",
+  shellInnerTone: "auto",
+  toolInnerTone: "auto",
+  /** 差异代码的语法高亮开关（语言识别与配色见 languages.js / highlight.js）。 */
+  syntaxHighlight: true,
+  /** 语言徽章样式：'short' 短代码、'full' 全名、'hidden' 隐藏。 */
+  languageBadge: "short",
+  /** 识别不到语言时：'show' 显示中性“未知语言”徽章，'hidden' 不显示。 */
+  unknownLanguage: "show",
+  /** 'on' = 高亮颜色 + 字体强调（关键词加粗、注释斜体）；'off' = 仅颜色。 */
+  syntaxEmphasis: "on"
+};
+var LANGUAGE_BADGE_VALUES = ["short", "full", "hidden"];
+var UNKNOWN_LANGUAGE_VALUES = ["show", "hidden"];
+var SYNTAX_EMPHASIS_VALUES = ["on", "off"];
+var SHELL_TONE_VALUES = ["auto", "light", "dark"];
+var INNER_TONE_VALUES = ["auto", "light", "dark", "same"];
+var STYLE_VALUES = ["enhanced", "native"];
+var MAX_STORED_SETTINGS_CHARS = 65536;
+var TRANSCRIPT_VIEW_VALUES = ["compact", "standard", "detailed", "verbose", "normal", "expanded"];
+var listeners = /* @__PURE__ */ new Set();
+var previousTranscript;
+var transcriptForm;
+var configFormsRef;
+var state = load();
+persist();
+function normalizeMode(value) {
+  if (value === "enhanced" || value === "native") return value;
+  if (typeof value === "string" && value !== "") return "enhanced";
+  return void 0;
+}
+function normalizeEnum(value, allowed, fallback) {
+  return typeof value === "string" && allowed.includes(value) ? value : fallback;
+}
+function normalizeBoolean(value, fallback) {
+  return typeof value === "boolean" ? value : fallback;
+}
+function normalizeShellTone(value) {
+  return normalizeEnum(value, SHELL_TONE_VALUES, "auto");
+}
+function normalizeInnerTone(value) {
+  return normalizeEnum(value, INNER_TONE_VALUES, "auto");
+}
+function normalizeTranscriptView(value) {
+  return typeof value === "string" && TRANSCRIPT_VIEW_VALUES.includes(value) ? value : void 0;
+}
+function enumGuard(allowed) {
+  return (value) => typeof value === "string" && allowed.includes(value) ? value : void 0;
+}
+var SETTING_VALIDATORS = {
+  language: (value) => normalizeEnum(value, LANGUAGE_SETTINGS, DEFAULTS.language),
+  fileCards: enumGuard(STYLE_VALUES),
+  shellRows: enumGuard(STYLE_VALUES),
+  toolCalls: enumGuard(STYLE_VALUES),
+  transcript: enumGuard(STYLE_VALUES),
+  fileShellTone: enumGuard(SHELL_TONE_VALUES),
+  shellShellTone: enumGuard(SHELL_TONE_VALUES),
+  toolShellTone: enumGuard(SHELL_TONE_VALUES),
+  fileInnerTone: enumGuard(INNER_TONE_VALUES),
+  shellInnerTone: enumGuard(INNER_TONE_VALUES),
+  toolInnerTone: enumGuard(INNER_TONE_VALUES),
+  syntaxHighlight: (value) => typeof value === "boolean" ? value : void 0,
+  languageBadge: enumGuard(LANGUAGE_BADGE_VALUES),
+  unknownLanguage: enumGuard(UNKNOWN_LANGUAGE_VALUES),
+  syntaxEmphasis: enumGuard(SYNTAX_EMPHASIS_VALUES)
+};
+function startAppearanceTracking() {
+  try {
+    const doc = globalThis.document;
+    const root = doc?.documentElement;
+    const body = doc?.body ?? null;
+    if (root === void 0 || root === null || typeof MutationObserver !== "function") return () => {
+    };
+    const styleOf = (node) => node === null ? "" : String(globalThis.getComputedStyle?.(node)?.colorScheme || "");
+    const apply2 = () => {
+      const tokens = [String(root.style.colorScheme || ""), styleOf(root), styleOf(body)].filter((part) => part !== "").join(" ").toLowerCase();
+      let mode;
+      if (tokens.includes("dark")) mode = "dark";
+      else if (tokens.includes("light")) mode = "light";
+      else if (body !== null && body.hasAttribute("data-ds-dark-theme")) mode = "dark";
+      else mode = globalThis.matchMedia?.("(prefers-color-scheme: dark)")?.matches === true ? "dark" : "light";
+      if (root.dataset.dshInlineDiffAppearance !== mode) root.dataset.dshInlineDiffAppearance = mode;
+      if (body !== null && body.dataset.dshInlineDiffAppearance !== mode) body.dataset.dshInlineDiffAppearance = mode;
+    };
+    apply2();
+    const observer = new MutationObserver(apply2);
+    observer.observe(root, { attributes: true, attributeFilter: ["style", "class"] });
+    if (body !== null) {
+      observer.observe(body, { attributes: true, attributeFilter: ["style", "class", "data-ds-dark-theme"] });
+    }
+    const media = globalThis.matchMedia?.("(prefers-color-scheme: dark)");
+    if (media !== null && media !== void 0 && typeof media.addEventListener === "function") media.addEventListener("change", apply2);
+    return () => {
+      observer.disconnect();
+      if (media !== null && media !== void 0 && typeof media.removeEventListener === "function") media.removeEventListener("change", apply2);
+    };
+  } catch {
+    return () => {
+    };
+  }
+}
+function load() {
+  try {
+    const storage = globalThis.localStorage;
+    if (storage === void 0 || storage === null) return { ...DEFAULTS };
+    let raw = storage.getItem(STORAGE_KEY);
+    if (typeof raw !== "string" || raw === "") raw = storage.getItem(LEGACY_KEY);
+    if (typeof raw !== "string" || raw === "") raw = storage.getItem(OLDER_KEY);
+    if (typeof raw !== "string" || raw === "") return { ...DEFAULTS };
+    if (raw.length > MAX_STORED_SETTINGS_CHARS) return { ...DEFAULTS };
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { ...DEFAULTS };
+    const next = { ...DEFAULTS };
+    next.language = normalizeEnum(parsed.language, LANGUAGE_SETTINGS, DEFAULTS.language);
+    const fileCards = normalizeMode(parsed.fileCards);
+    const shellRows = normalizeMode(parsed.shellRows);
+    const toolCalls = normalizeMode(parsed.toolCalls);
+    const transcript = normalizeMode(parsed.transcript);
+    if (fileCards !== void 0) next.fileCards = fileCards;
+    if (shellRows !== void 0) next.shellRows = shellRows;
+    if (toolCalls !== void 0) next.toolCalls = toolCalls;
+    if (transcript !== void 0) next.transcript = transcript;
+    if (parsed.fileShellTone !== void 0) next.fileShellTone = normalizeShellTone(parsed.fileShellTone);
+    if (parsed.shellShellTone !== void 0) next.shellShellTone = normalizeShellTone(parsed.shellShellTone);
+    if (parsed.toolShellTone !== void 0) next.toolShellTone = normalizeShellTone(parsed.toolShellTone);
+    if (parsed.fileInnerTone !== void 0) next.fileInnerTone = normalizeInnerTone(parsed.fileInnerTone);
+    if (parsed.shellInnerTone !== void 0) next.shellInnerTone = normalizeInnerTone(parsed.shellInnerTone);
+    if (parsed.toolInnerTone !== void 0) next.toolInnerTone = normalizeInnerTone(parsed.toolInnerTone);
+    next.syntaxHighlight = normalizeBoolean(parsed.syntaxHighlight, DEFAULTS.syntaxHighlight);
+    next.languageBadge = normalizeEnum(parsed.languageBadge, LANGUAGE_BADGE_VALUES, DEFAULTS.languageBadge);
+    next.unknownLanguage = normalizeEnum(parsed.unknownLanguage, UNKNOWN_LANGUAGE_VALUES, DEFAULTS.unknownLanguage);
+    next.syntaxEmphasis = normalizeEnum(parsed.syntaxEmphasis, SYNTAX_EMPHASIS_VALUES, DEFAULTS.syntaxEmphasis);
+    previousTranscript = normalizeTranscriptView(parsed.previousTranscript);
+    return next;
+  } catch {
+    return { ...DEFAULTS };
+  }
+}
+function persist() {
+  try {
+    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({
+      ...state,
+      ...previousTranscript === void 0 ? {} : { previousTranscript }
+    }));
+    globalThis.localStorage?.removeItem(LEGACY_KEY);
+    globalThis.localStorage?.removeItem(OLDER_KEY);
+    globalThis.localStorage?.removeItem(RETIRED_KEY);
+  } catch {
+  }
+}
+function emit() {
+  for (const listener of listeners) listener();
+}
+function getSettings() {
+  return state;
+}
+function subscribeSettings(listener) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+function updateSettings(patch) {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return;
+  const next = {};
+  for (const key of Object.keys(patch)) {
+    const validate = SETTING_VALIDATORS[key];
+    if (typeof validate !== "function") continue;
+    const value = validate(patch[key]);
+    if (value !== void 0) next[key] = value;
+  }
+  if (Object.keys(next).length === 0) return;
+  state = { ...state, ...next };
+  persist();
+  emit();
+}
+async function resetSettings() {
+  const wasEnhanced = state.transcript === "enhanced";
+  state = { ...DEFAULTS };
+  previousTranscript = void 0;
+  persist();
+  emit();
+  try {
+    if (state.transcript === "enhanced") await adoptTranscriptPreference();
+    else if (wasEnhanced) await setTranscriptPreference("native");
+  } catch {
+  }
+}
+function initSettings(configForms) {
+  configFormsRef = configForms;
+  void adoptTranscriptPreference();
+}
+function chatForm() {
+  if (configFormsRef === void 0) throw new Error("configForms is not available");
+  if (transcriptForm === void 0) transcriptForm = configFormsRef.get("ui-chat");
+  return transcriptForm;
+}
+function currentTranscriptMode() {
+  try {
+    return chatForm().getSnapshot().value?.transcriptView;
+  } catch {
+    return void 0;
+  }
+}
+function restorableTranscript(value) {
+  const normalized = normalizeTranscriptView(value);
+  if (normalized === void 0) return void 0;
+  return normalized === "normal" || normalized === "expanded" ? "detailed" : normalized;
+}
+function rememberPreviousTranscript(current) {
+  const restorable = restorableTranscript(current);
+  if (restorable !== void 0 && restorable !== "verbose") previousTranscript = restorable;
+}
+async function setTranscriptPreference(mode) {
+  const form = chatForm();
+  if (mode === "enhanced") {
+    const current2 = form.getSnapshot().value?.transcriptView;
+    if (typeof current2 !== "string") previousTranscript = "standard";
+    else rememberPreviousTranscript(current2);
+    updateSettings({ transcript: "enhanced" });
+    await form.set("transcriptView", "verbose");
+    return;
+  }
+  updateSettings({ transcript: "native" });
+  const current = form.getSnapshot().value?.transcriptView;
+  if (current === "verbose") {
+    await form.set("transcriptView", restorableTranscript(previousTranscript) ?? "standard");
+  }
+}
+async function adoptTranscriptPreference() {
+  if (state.transcript !== "enhanced") return;
+  try {
+    if (configFormsRef === void 0) return;
+    const form = chatForm();
+    const current = form.getSnapshot().value?.transcriptView;
+    if (current !== "verbose") {
+      if (typeof current !== "string") previousTranscript = "standard";
+      else rememberPreviousTranscript(current);
+      await form.set("transcriptView", "verbose");
+      persist();
+    }
+  } catch {
+  }
+}
+
+// src/client/use-settings.js
+function useSettingsSnapshot() {
+  return (0, import_react.useSyncExternalStore)(subscribeSettings, getSettings, getSettings);
+}
+
 // src/client/enhanced-tools.jsx
 var import_jsx_runtime = require("react/jsx-runtime");
 function toolLabel(name, t) {
-  if (typeof name !== "string" || name === "") return "Tool";
+  if (typeof name !== "string" || name === "") return typeof t === "function" ? t("tool.unknownName") : "Tool";
   if (typeof t === "function") {
     const key = `toolTitle.${name}`;
     const translated = t(key);
@@ -2806,7 +3413,7 @@ function toolLabel(name, t) {
   return name.replace(/[_-]+/g, " ").replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 function wireName(name, t) {
-  if (typeof name !== "string" || name === "") return "Tool";
+  if (typeof name !== "string" || name === "") return typeof t === "function" ? t("tool.unknownName") : "Tool";
   if (typeof t === "function") {
     const key = `toolTitle.${name}`;
     const translated = t(key);
@@ -2815,7 +3422,7 @@ function wireName(name, t) {
   return name;
 }
 function clampSummary(text) {
-  const first = typeof text === "string" ? text.split("\n")[0].trim() : "";
+  const first = typeof text === "string" ? firstLine(text).trim() : "";
   return first.length > 120 ? first.slice(0, 120) + "…" : first;
 }
 function searchSummary(call2) {
@@ -2881,23 +3488,8 @@ function inputText(call2) {
   }
   return call2.argsRaw ?? "";
 }
-function outputText(call2) {
-  const parts = [];
-  for (const part of call2.content) {
-    if (part === null || typeof part !== "object") continue;
-    if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
-    else if (part.type === "image") parts.push("[image]");
-    else parts.push(JSON.stringify(part, null, 2));
-  }
-  if (parts.length === 0 && call2.error !== null && call2.error !== void 0) {
-    const info = call2.error;
-    const reason = typeof info.reason === "string" ? info.reason : typeof info.code === "string" ? info.code : typeof info.name === "string" ? info.name : "";
-    if (reason !== "") parts.push(reason);
-  }
-  return parts.join("\n");
-}
 function kindOf(toolName) {
-  if (SHELL_KEYS.has(toolName)) return "command";
+  if (SHELL_KEY_SET.has(toolName)) return "command";
   if (toolName === "grep" || toolName === "glob") return "search";
   if (toolName === "web_search" || toolName === "web_fetch") return "web";
   return "tool";
@@ -2908,36 +3500,32 @@ function genericModel(block, toolName, t) {
   const state2 = !call2.settled ? call2.phase === "preparing" ? "preparing" : "running" : stopped ? "stopped" : call2.isError ? "error" : "ok";
   const sections = sectionStates(call2);
   const resolvedName = call2.name !== "" ? call2.name : toolName;
+  const imageMarker = typeof t === "function" ? t("tool.image") : "[image]";
   return {
     title: toolLabel(resolvedName, t),
     displayName: wireName(resolvedName, t),
+    // 卡片稳定标识：状态点与 IN/OUT 色条据此共享同一个呼吸相位（见 motion.js）。
+    callId: call2.callId,
     summary: summaryOf(call2.args, call2),
     badge: badgeOf(call2, t),
     kind: kindOf(resolvedName),
     input: inputText(call2),
-    output: call2.settled ? outputText(call2) : "",
+    output: call2.settled ? contentText(call2, imageMarker) : "",
     state: state2,
     inputState: sections.input,
     outputState: sections.output,
-    // "Input accepted, output pending": show an OUT placeholder so its own
-    // brand-colored, pulsing bar is visible while the tool runs.
+    // “输入已接受、输出等待中”：显示 OUT 占位，让工具运行时 OUT 自己的品牌色
+    // 呼吸条保持可见。
     waitingForOutput: call2.settled !== true && call2.phase !== "preparing"
   };
 }
-function statusKey(state2) {
-  if (state2 === "preparing") return "state.preparing";
-  if (state2 === "running") return "state.running";
-  if (state2 === "error") return "state.error";
-  if (state2 === "stopped") return "state.stopped";
-  return null;
-}
 function EnhancedExpandedTool({ block, toolName, t, inspect }) {
-  const tone = useDisplaySettings();
-  const model = (0, import_react.useMemo)(() => genericModel(block, toolName, t), [block, toolName, t]);
-  const [open, setOpen] = (0, import_react.useState)(true);
-  const stateLabel = statusKey(model.state);
+  const tone = useSettingsSnapshot();
+  const model = (0, import_react2.useMemo)(() => genericModel(block, toolName, t), [block, toolName, t]);
+  const [open, setOpen] = (0, import_react2.useState)(true);
+  const stateLabel = stateKeyOf(model.state);
   const hasBody = model.input !== "" || model.output !== "";
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-tool enhanced-generic", "data-variant": "tool", "data-kind": model.kind, "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.toolShellTone, "data-inner-tone": tone.toolInnerTone, "data-body": hasBody && open ? "true" : "false", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-tool enhanced-generic", "data-variant": "tool", "data-kind": model.kind, "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.toolShellTone, "data-inner-tone": tone.toolInnerTone, "data-body": hasBody && open ? "true" : "false", style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "enhanced-kind", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(KindIcon, { kind: model.kind }) }),
       hasBody ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -3022,10 +3610,8 @@ var ENHANCED_DETAILS_KEYS = [
   "team_task_list"
 ];
 var ENHANCED_SEARCH_WEB_KEYS = ["grep", "glob", "web_search", "web_fetch"];
-var SHELL_KEYS = /* @__PURE__ */ new Set(["bash", "pwsh", "win_bash"]);
-function useDisplaySettings() {
-  return (0, import_react.useSyncExternalStore)(subscribeSettings, getSettings, getSettings);
-}
+var SHELL_KEYS = Object.freeze(["bash", "pwsh", "win_bash"]);
+var SHELL_KEY_SET = new Set(SHELL_KEYS);
 var ENHANCED_GENERIC_KEYS = [
   "browser_navigate",
   "browser_click",
@@ -3117,35 +3703,18 @@ function InspectButton({ inspect, t }) {
 
 // src/client/enhanced-shell.jsx
 var import_jsx_runtime2 = require("react/jsx-runtime");
-function resultText(call2) {
-  const parts = [];
-  for (const part of call2.content) {
-    if (part !== null && typeof part === "object") {
-      if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
-      else if (part.type !== void 0) parts.push(JSON.stringify(part, null, 2));
-    }
-  }
-  if (parts.length === 0 && call2.error !== null && call2.error !== void 0) {
-    const info = call2.error;
-    const reason = typeof info.reason === "string" ? info.reason : typeof info.code === "string" ? info.code : typeof info.name === "string" ? info.name : "";
-    if (reason !== "") parts.push(reason);
-  }
-  return parts.join("\n");
-}
 function parseExit(text) {
   const signal = /\n\[killed by signal: ([^\]\n]+)\]$/.exec(text);
-  if (signal !== null) return { output: text.slice(0, signal.index), label: signal[1], failed: true };
+  if (signal !== null) return { output: text.slice(0, signal.index), signal: signal[1], failed: true };
   const exit = /\n\[exit code: (-?\d+|null)\]$/.exec(text);
   if (exit !== null) {
     const code = exit[1] === "null" ? null : Number(exit[1]);
-    return { output: text.slice(0, exit.index), label: code === null ? "null" : `exit ${code}`, failed: code !== 0 };
+    return { output: text.slice(0, exit.index), code, failed: code !== 0 };
   }
-  return { output: text, label: void 0, failed: false };
+  return { output: text, failed: false };
 }
-function firstLine(text) {
-  if (typeof text !== "string") return "";
-  const newline = text.indexOf("\n");
-  return (newline === -1 ? text : text.slice(0, newline)).trim();
+function firstLineOf(text) {
+  return firstLine(text).trim();
 }
 function shellModel(block, toolName) {
   const call2 = deriveCall(block);
@@ -3154,10 +3723,11 @@ function shellModel(block, toolName) {
   const description = args !== null && typeof args.description === "string" ? args.description : "";
   const background = args !== null && args.run_in_background === true;
   const title = call2.name === "pwsh" || toolName === "pwsh" ? "PowerShell" : "Bash";
-  const summary = description.trim() !== "" ? firstLine(description) : firstLine(command);
+  const summary = description.trim() !== "" ? firstLineOf(description) : firstLineOf(command);
   const input = command !== "" ? command : typeof call2.argsRaw === "string" ? call2.argsRaw.trim() : "";
-  const text = call2.settled ? resultText(call2) : "";
-  const exit = call2.settled && text !== "" ? parseExit(text) : { output: text, label: void 0, failed: false };
+  const text = call2.settled ? contentText(call2) : "";
+  const exit = call2.settled && text !== "" ? parseExit(text) : { output: text, failed: false };
+  const exitInfo = call2.settled && !call2.isError && (exit.signal !== void 0 || exit.code !== void 0 && exit.code !== 0) ? { signal: exit.signal, code: exit.code } : void 0;
   const sections = shellSectionStates(call2, exit.failed === true);
   const stopped = call2.settled && call2.error !== null && call2.error !== void 0 && call2.error.code === "interrupted";
   const state2 = !call2.settled ? call2.phase === "preparing" ? "preparing" : "running" : stopped ? "stopped" : call2.isError || exit.failed ? "error" : "ok";
@@ -3167,35 +3737,34 @@ function shellModel(block, toolName) {
     command,
     input,
     description,
+    // 卡片稳定标识：状态点与 IN/OUT 色条据此共享同一个呼吸相位（见 motion.js）。
+    callId: call2.callId,
     output: call2.settled ? exit.output : "",
-    exitLabel: call2.settled && !call2.isError ? exit.label : void 0,
+    exitInfo,
     state: state2,
     inputState: sections.input,
     outputState: sections.output,
-    // "Input accepted, output pending": the OUT section shows a placeholder so
-    // its own (brand colored, pulsing) bar is visible while the process runs.
+    // “输入已接受、输出等待中”：OUT 段显示占位文本，让 OUT 自己的品牌色呼吸条
+    // 在进程运行时保持可见。
     waitingForOutput: call2.settled !== true && call2.phase !== "preparing",
     background,
     expanded: command !== "" || exit.output !== ""
   };
 }
-function useCardSettings() {
-  return (0, import_react2.useSyncExternalStore)(subscribeSettings, getSettings, getSettings);
-}
 function EnhancedShellCard(props) {
   const { block, toolName, phase, t, inspect } = props;
-  const tone = useCardSettings();
-  const model = (0, import_react2.useMemo)(() => shellModel(block, toolName), [block, toolName]);
+  const tone = useSettingsSnapshot();
+  const model = (0, import_react3.useMemo)(() => shellModel(block, toolName), [block, toolName]);
   const hasIO = model.input !== "" || model.output !== "" || model.waitingForOutput;
   const stateLabel = model.state === "error" ? t("state.error") : model.state === "stopped" ? t("state.stopped") : model.state === "running" ? t("state.running") : model.state === "preparing" ? t("state.preparing") : "";
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-tool enhanced-command", "data-variant": "command", "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.shellShellTone, "data-inner-tone": tone.shellInnerTone, "data-body": hasIO ? "true" : "false", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-tool enhanced-command", "data-variant": "command", "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.shellShellTone, "data-inner-tone": tone.shellInnerTone, "data-body": hasIO ? "true" : "false", style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-kind", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(KindIcon, { kind: "command" }) }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-dot", "aria-hidden": "true" }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-name", children: model.title }),
       model.summary !== "" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-summary", title: model.command, children: model.summary }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "enhanced-actions", children: [
-        model.exitLabel !== void 0 && model.exitLabel !== "exit 0" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-exit", children: model.exitLabel }) : null,
+        model.exitInfo !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-exit", children: model.exitInfo.signal !== void 0 ? t("shell.signal", { name: model.exitInfo.signal }) : model.exitInfo.code === null ? t("shell.exitNull") : t("shell.exit", { code: model.exitInfo.code }) }) : null,
         stateLabel !== "" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-state", children: stateLabel }) : null,
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(InspectButton, { inspect, t })
       ] })
@@ -3221,7 +3790,7 @@ function EnhancedShellCard(props) {
 }
 
 // src/client/components.jsx
-var import_react3 = require("react");
+var import_react4 = require("react");
 var import_react_dom = require("react-dom");
 
 // src/client/api.js
@@ -3272,6 +3841,13 @@ async function fetchFileText(cwd, path) {
 var FILE_CACHE_LIMIT = 24;
 var FILE_CACHE_TTL = 15e3;
 var fileCache = /* @__PURE__ */ new Map();
+function trimCache(map, limit) {
+  while (map.size > limit) {
+    const oldest = map.keys().next().value;
+    if (oldest === void 0) break;
+    map.delete(oldest);
+  }
+}
 async function cachedFileText(cwd, path) {
   const key = `${cwd ?? ""}\0${path ?? ""}`;
   const now = Date.now();
@@ -3283,12 +3859,10 @@ async function cachedFileText(cwd, path) {
   }
   const value = await fetchFileText(cwd, path);
   fileCache.set(key, { value, at: now });
-  if (fileCache.size > FILE_CACHE_LIMIT) {
-    const oldest = fileCache.keys().next().value;
-    if (oldest !== void 0) fileCache.delete(oldest);
-  }
+  trimCache(fileCache, FILE_CACHE_LIMIT);
   return value;
 }
+var SNAPSHOT_CACHE_LIMIT = 160;
 var snapshotCache = /* @__PURE__ */ new Map();
 async function cachedSnapshot(sessionId, callId) {
   const key = `${sessionId ?? ""}\0${callId ?? ""}`;
@@ -3299,10 +3873,7 @@ async function cachedSnapshot(sessionId, callId) {
     snapshot = await fetchSnapshot(sessionId, callId);
   }
   snapshotCache.set(key, snapshot);
-  if (snapshotCache.size > 160) {
-    const oldest = snapshotCache.keys().next().value;
-    if (oldest !== void 0) snapshotCache.delete(oldest);
-  }
+  trimCache(snapshotCache, SNAPSHOT_CACHE_LIMIT);
   return snapshot;
 }
 
@@ -20582,7 +21153,7 @@ function yaml(hljs) {
 // src/client/languages.js
 var LANGUAGES = Object.freeze(
   [
-    // --- Markup / web -------------------------------------------------------
+    // ---- 标记 / Web 前端 ----
     {
       id: "javascript",
       label: "JavaScript",
@@ -20599,7 +21170,7 @@ var LANGUAGES = Object.freeze(
       id: "json",
       label: "JSON",
       short: "JSON",
-      // JSONC (JSON with comments) is highlighted by the JSON grammar.
+      // JSONC（带注释的 JSON）用 JSON grammar 近似高亮。
       extensions: ["json", "jsonc"],
       filenames: [".babelrc", ".eslintrc", ".prettierrc", ".stylelintrc"]
     },
@@ -20630,12 +21201,12 @@ var LANGUAGES = Object.freeze(
       id: "ini",
       label: "INI / Config",
       short: "INI",
-      // TOML has no highlight.js grammar; the ini grammar is a close enough
-      // approximation for the card's purposes (spec decision).
+      // TOML 没有 highlight.js grammar；ini grammar 对卡片展示来说足够近似
+      // （产品约定，见 README 已知限制）。
       extensions: ["ini", "cfg", "conf", "properties", "toml"],
       filenames: [".editorconfig", ".npmrc", ".yarnrc", ".gitconfig", ".env", "cargo.toml"]
     },
-    // --- Data / serialization ----------------------------------------------
+    // ---- 数据 / 序列化 ----
     { id: "sql", label: "SQL", short: "SQL", extensions: ["sql"] },
     {
       id: "graphql",
@@ -20650,7 +21221,7 @@ var LANGUAGES = Object.freeze(
       extensions: ["proto"]
     },
     { id: "diff", label: "Diff", short: "DIFF", extensions: ["diff", "patch"] },
-    // --- Backend / general purpose -----------------------------------------
+    // ---- 后端 / 通用语言 ----
     {
       id: "python",
       label: "Python",
@@ -20661,7 +21232,8 @@ var LANGUAGES = Object.freeze(
     { id: "kotlin", label: "Kotlin", short: "KT", extensions: ["kt", "kts"] },
     { id: "go", label: "Go", short: "GO", extensions: ["go"] },
     { id: "rust", label: "Rust", short: "RS", extensions: ["rs"] },
-    // `.h` is claimed by Objective-C below, per the team spec.
+    // `.h` 归 Objective-C（见下方注册项），这是产品约定：头文件按 ObjC 高亮
+    // 比按 C/C++ 更常见，避免同一后缀在两张表里冲突。
     { id: "c", label: "C", short: "C", extensions: ["c"] },
     {
       id: "cpp",
@@ -20750,7 +21322,7 @@ var LANGUAGES = Object.freeze(
     { id: "d", label: "D", short: "D", extensions: ["d", "di"] },
     { id: "nim", label: "Nim", short: "NIM", extensions: ["nim", "nims", "nimble"] },
     { id: "crystal", label: "Crystal", short: "CR", extensions: ["cr"] },
-    // --- Scripts / build / terminal ----------------------------------------
+    // ---- 脚本 / 构建 / 终端 ----
     {
       id: "shell",
       label: "Shell",
@@ -20821,7 +21393,7 @@ var LANGUAGES = Object.freeze(
     },
     { id: "vbscript", label: "VBScript", short: "VBS", extensions: ["vbs"] },
     { id: "vbnet", label: "VB.NET", short: "VB", extensions: ["vb"] },
-    // --- Documentation / other ---------------------------------------------
+    // ---- 文档 / 其它 ----
     { id: "latex", label: "LaTeX", short: "TEX", extensions: ["tex", "latex", "sty", "cls"] },
     { id: "asciidoc", label: "AsciiDoc", short: "ADOC", extensions: ["adoc", "asciidoc", "asc"] }
   ].map((entry) => Object.freeze(entry))
@@ -21065,14 +21637,14 @@ function groupForClass(className) {
   return PRIMARY_GROUPS.get(primary) ?? "var";
 }
 var PRIMARY_GROUPS = /* @__PURE__ */ new Map([
-  // keywords / control flow
+  // 关键词 / 控制流
   ["keyword", "kw"],
   ["selector-tag", "kw"],
   ["selector-class", "kw"],
   ["selector-id", "kw"],
   ["meta-keyword", "kw"],
   ["doctag", "kw"],
-  // strings / regexps / template text
+  // 字符串 / 正则 / 模板文本
   ["string", "str"],
   ["char", "str"],
   ["regexp", "str"],
@@ -21080,12 +21652,12 @@ var PRIMARY_GROUPS = /* @__PURE__ */ new Map([
   ["meta-string", "str"],
   ["template-string", "str"],
   ["code", "str"],
-  // numbers / constants
+  // 数字 / 常量
   ["number", "num"],
   ["literal", "num"],
   ["symbol", "num"],
   ["bullet", "num"],
-  // functions / types
+  // 函数 / 类型
   ["function", "fn"],
   ["function_", "fn"],
   ["title", "fn"],
@@ -21093,7 +21665,7 @@ var PRIMARY_GROUPS = /* @__PURE__ */ new Map([
   ["type", "type"],
   ["class-name", "type"],
   ["class_", "type"],
-  // properties / attributes / variables
+  // 属性 / 特性 / 变量
   ["attr", "prop"],
   ["attribute", "prop"],
   ["property", "prop"],
@@ -21103,22 +21675,22 @@ var PRIMARY_GROUPS = /* @__PURE__ */ new Map([
   ["template-variable", "prop"],
   ["subst", "prop"],
   ["selector-attr", "prop"],
-  // comments
+  // 注释
   ["comment", "com"],
   ["quote", "com"],
-  // meta / annotations / preprocessor
+  // 元信息 / 注解 / 预处理
   ["meta", "meta"],
-  // diff grammar markers: never red/green semantics, just meta
+  // diff grammar 标记：绝不用红/绿语义，只当中性 meta
   ["addition", "meta"],
   ["deletion", "meta"],
-  // tags / headings
+  // 标签 / 标题
   ["tag", "tag"],
   ["name", "tag"],
   ["section", "head"],
-  // operators / punctuation
+  // 运算符 / 标点
   ["operator", "op"],
   ["punctuation", "punct"],
-  // emphasis / links
+  // 强调 / 链接
   ["emphasis", "emph"],
   ["strong", "emph"],
   ["link", "link"]
@@ -21402,9 +21974,6 @@ function subscribeDiffModal(listener) {
 
 // src/client/components.jsx
 var import_jsx_runtime3 = require("react/jsx-runtime");
-function useCardSettings2() {
-  return (0, import_react3.useSyncExternalStore)(subscribeSettings, getSettings, getSettings);
-}
 function Icon({ kind, size = 14 }) {
   const common = {
     viewBox: "0 0 16 16",
@@ -21452,13 +22021,6 @@ function hunkRangeText(hunk, t) {
     old: range(hunk.oldStart, hunk.oldEnd),
     new: range(hunk.newStart, hunk.newEnd)
   });
-}
-function stateKeyOf(status) {
-  if (status === "preparing") return "state.preparing";
-  if (status === "running") return "state.running";
-  if (status === "error") return "state.error";
-  if (status === "stopped") return "state.stopped";
-  return null;
 }
 function sourceLabel(source3, t) {
   if (source3 === "snapshot") return t("snapshotSource");
@@ -21566,7 +22128,7 @@ function RowText({ row, fallback, tokens }) {
   if (colorable !== null && hasSegments) {
     const groups = splitTokensBySegments(colorable, segments);
     if (groups !== null) {
-      return groups.map((group, index) => group.changed ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-seg", "data-changed": "true", children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react3.Fragment, { children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index));
+      return groups.map((group, index) => group.changed ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-seg", "data-changed": "true", children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react4.Fragment, { children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index));
     }
   }
   if (!hasSegments) return fallback;
@@ -21579,15 +22141,29 @@ function moveText(move, t) {
   }
   return move.kind === "to" ? t("movedTo", { line: move.line }) : t("movedFrom", { line: move.line });
 }
+var DISPLAY_LINE_CHARS = 2e4;
+function clampLineForDisplay(text) {
+  if (typeof text !== "string") return { text: "", truncated: false, total: 0 };
+  if (text.length <= DISPLAY_LINE_CHARS) return { text, truncated: false, total: text.length };
+  return { text: text.slice(0, DISPLAY_LINE_CHARS) + "…", truncated: true, total: text.length };
+}
 function InlineRow({ row, t, highlighter, hunk }) {
-  const code = row.text === "" ? " " : row.text;
+  const clipped = clampLineForDisplay(row.text);
+  const code = clipped.text === "" ? " " : clipped.text;
   const move = row.move;
-  const tokens = highlighter === null || highlighter === void 0 ? null : tokensForRow(highlighter, hunk ?? null, row, row.kind === "del" ? "old" : "new");
+  const tokens = clipped.truncated || highlighter === null || highlighter === void 0 ? null : tokensForRow(highlighter, hunk ?? null, row, row.kind === "del" ? "old" : "new");
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-row", "data-kind": row.kind, children: [
     /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-num", "data-side": "old", children: row.oldNo ?? "" }),
     /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-num", "data-side": "new", children: row.newNo ?? "" }),
     /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-sign", children: row.kind === "add" ? "+" : row.kind === "del" ? "−" : " " }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("code", { className: "did-code", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RowText, { row, fallback: code, tokens }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+      "code",
+      {
+        className: "did-code",
+        title: clipped.truncated ? t("lineTruncated", { n: clipped.total }) : void 0,
+        children: clipped.truncated ? code : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RowText, { row, fallback: code, tokens })
+      }
+    ),
     move !== void 0 && move !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-move", children: moveText(move, t) }) : null
   ] });
 }
@@ -21628,10 +22204,9 @@ function InlineHunk({ hunk, rows, t, pathLabel, highlighter }) {
       ] })
     ] }),
     hunk.hasNumbers === false ? null : (
-      // Column legend for the two line-number gutters: makes it obvious which
-      // number is the old-file line and which is the new-file line, on every
-      // hunk rather than only in the hunk header above. A side that this hunk
-      // never numbers keeps its column but drops the label.
+      // 两列行号的显式图例：让用户在每个 hunk 上都能分清哪个数字是旧文件行、
+      // 哪个是新文件行，而不是只靠上方的 hunk 头猜。本 hunk 从未编号的一侧
+      // 保留列宽但去掉标签。
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-numhead", "aria-hidden": "true", "data-sides": legendSides, children: [
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-numhead-label", "data-side": "old", children: hasOldNumbers ? t("gutterOld") : "" }),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-numhead-label", "data-side": "new", children: hasNewNumbers ? t("gutterNew") : "" })
@@ -21669,12 +22244,20 @@ function pairRows(rows, cap) {
 function SideCell({ row, side, t, highlighter, hunk }) {
   const kind = row === null ? "none" : row.kind;
   const lineNo = row === null ? null : side === "left" ? row.oldNo : row.newNo;
-  const code = row === null ? "" : row.text === "" ? " " : row.text;
+  const clipped = clampLineForDisplay(row === null ? "" : row.text);
+  const code = clipped.text === "" ? " " : clipped.text;
   const move = row === null ? null : row.move;
-  const tokens = row === null || highlighter === null || highlighter === void 0 ? null : tokensForRow(highlighter, hunk ?? null, row, side === "left" ? "old" : "new");
+  const tokens = row === null || clipped.truncated || highlighter === null || highlighter === void 0 ? null : tokensForRow(highlighter, hunk ?? null, row, side === "left" ? "old" : "new");
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-cell", "data-kind": kind, children: [
     /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-num", children: lineNo ?? "" }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("code", { className: "did-code", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RowText, { row, fallback: code || " ", tokens }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+      "code",
+      {
+        className: "did-code",
+        title: clipped.truncated ? t("lineTruncated", { n: clipped.total }) : void 0,
+        children: clipped.truncated ? code : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RowText, { row, fallback: code, tokens })
+      }
+    ),
     move !== null && move !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-move", children: moveText(move, t) }) : null
   ] });
 }
@@ -21700,7 +22283,7 @@ function SideBySide({ diff: diff2, mode, pathLabel, t, highlighter }) {
   }
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-sbs", "data-mode": "hunks", children: diff2.hunks.map((hunk) => {
     const { pairs } = pairRows(hunk.rows, Number.POSITIVE_INFINITY);
-    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react3.Fragment, { children: [
+    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react4.Fragment, { children: [
       hunk.gapBefore !== null && hunk.gapBefore !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(GapBand, { gap: hunk.gapBefore, t }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-bar", children: [
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-bar-file", title: pathLabel || void 0, children: pathLabel }),
@@ -21725,7 +22308,9 @@ function SideBySide({ diff: diff2, mode, pathLabel, t, highlighter }) {
     ] }, hunk.index);
   }) });
 }
-function noticeText(notice, t) {
+function noticeText(notice, t, truncated) {
+  if (truncated === true) return t("noticeTruncated");
+  if (notice === null || notice === void 0) return "";
   if (notice.kind === "huge") return t("noticeHuge", { old: notice.old, new: notice.new });
   if (notice.kind === "coarse") return t("noticeCoarse");
   if (notice.kind === "tool") return t("noticeTool");
@@ -21750,13 +22335,13 @@ function modalPayloadOf(model) {
 }
 function InlineDiffCard(props) {
   const { block, toolName, cwd, home, openFile, inspect, sessionId, t } = props;
-  const tone = useCardSettings2();
-  const call2 = (0, import_react3.useMemo)(() => deriveCall(block), [block]);
-  const [snapshot, setSnapshot] = (0, import_react3.useState)(void 0);
-  const [fileText, setFileText] = (0, import_react3.useState)(null);
-  const [collapsed, setCollapsed] = (0, import_react3.useState)(false);
-  const requested = (0, import_react3.useRef)(false);
-  (0, import_react3.useEffect)(() => {
+  const tone = useSettingsSnapshot();
+  const call2 = (0, import_react4.useMemo)(() => deriveCall(block), [block]);
+  const [snapshot, setSnapshot] = (0, import_react4.useState)(void 0);
+  const [fileText, setFileText] = (0, import_react4.useState)(null);
+  const [collapsed, setCollapsed] = (0, import_react4.useState)(false);
+  const requested = (0, import_react4.useRef)(false);
+  (0, import_react4.useEffect)(() => {
     if (requested.current) return;
     if (!call2.settled || call2.isError) return;
     requested.current = true;
@@ -21778,7 +22363,7 @@ function InlineDiffCard(props) {
       alive = false;
     };
   }, [call2.settled, call2.isError, call2.callId, call2.meta, cwd, sessionId]);
-  const model = (0, import_react3.useMemo)(() => buildCardModel({
+  const model = (0, import_react4.useMemo)(() => buildCardModel({
     block,
     toolName,
     cwd,
@@ -21788,19 +22373,27 @@ function InlineDiffCard(props) {
     loading: snapshot === void 0 && call2.settled && !call2.isError
   }), [block, toolName, cwd, home, snapshot, fileText, call2.settled, call2.isError]);
   const diff2 = model.diff;
-  const languageId = (0, import_react3.useMemo)(
+  const languageId = (0, import_react4.useMemo)(
     () => detectLanguage(model.absolutePath ?? model.filePath, model.diff?.afterText ?? model.diff?.beforeText ?? ""),
     [model.absolutePath, model.filePath, model.diff]
   );
-  const highlighter = (0, import_react3.useMemo)(
+  const highlighter = (0, import_react4.useMemo)(
     () => tone.syntaxHighlight !== false && languageId !== null && diff2 !== null && diff2 !== void 0 ? getDiffHighlighter(diff2, languageId) : null,
     [diff2, languageId, tone.syntaxHighlight]
   );
   const hasHunks = diff2 !== null && diff2 !== void 0 && diff2.hunks.length > 0;
   const stateKey = stateKeyOf(model.status);
   const totalHunks = hasHunks ? diff2.hunks.length : 0;
-  const plan = (0, import_react3.useMemo)(() => hasHunks ? buildInlinePlan(diff2) : null, [diff2, hasHunks]);
+  const plan = (0, import_react4.useMemo)(() => hasHunks ? buildInlinePlan(diff2) : null, [diff2, hasHunks]);
   const hidden = plan === null ? 0 : plan.total - plan.shown;
+  const truncated = diff2 !== null && diff2 !== void 0 && diff2.truncated === true;
+  const cardNotice = (() => {
+    if (truncated) return noticeText(null, t, true);
+    const notice = model.notice;
+    if (notice === null || notice === void 0) return null;
+    if (notice.kind === "history" || notice.kind === "locate" || notice.kind === "tool" || notice.kind === "toolLocate") return null;
+    return noticeText(notice, t, false);
+  })();
   const openModal = (event) => {
     event?.stopPropagation?.();
     if (!isTrustedGesture(event)) return;
@@ -21831,7 +22424,7 @@ function InlineDiffCard(props) {
     ] });
     return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-empty", children: t("noDiff") });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react3.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-card", "data-state": model.status, "data-tool": model.toolName, "data-call-id": model.callId, "data-inline-diff": "row", "data-shell-tone": tone.fileShellTone, "data-inner-tone": tone.fileInnerTone, "data-language": languageId ?? "unknown", "data-syn-emphasis": tone.syntaxEmphasis, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react4.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-card", "data-state": model.status, "data-tool": model.toolName, "data-call-id": model.callId, "data-inline-diff": "row", "data-shell-tone": tone.fileShellTone, "data-inner-tone": tone.fileInnerTone, "data-language": languageId ?? "unknown", "data-syn-emphasis": tone.syntaxEmphasis, style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
     /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
       "div",
       {
@@ -21901,8 +22494,8 @@ function InlineDiffCard(props) {
         ]
       }
     ),
-    model.notice !== null && model.notice !== void 0 && model.notice.kind !== "history" && model.notice.kind !== "locate" && model.notice.kind !== "tool" && model.notice.kind !== "toolLocate" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-notice", children: noticeText(model.notice, t) }) : null,
-    !collapsed ? hasHunks ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react3.Fragment, { children: [
+    cardNotice !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-notice", children: cardNotice }) : null,
+    !collapsed ? hasHunks ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react4.Fragment, { children: [
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-body", children: plan.parts.map((part) => {
         if (part.type === "gap") return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(GapBand, { gap: part.gap, t }, part.key);
         return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
@@ -21927,27 +22520,27 @@ function InlineDiffCard(props) {
   ] }) });
 }
 function DiffModal({ t }) {
-  const payload2 = (0, import_react3.useSyncExternalStore)(subscribeDiffModal, getDiffModal, getDiffModal);
-  const settings = useCardSettings2();
-  const [tab, setTab] = (0, import_react3.useState)("hunks");
-  const [portalHost, setPortalHost] = (0, import_react3.useState)(null);
-  const dialogRef = (0, import_react3.useRef)(null);
+  const payload2 = (0, import_react4.useSyncExternalStore)(subscribeDiffModal, getDiffModal, getDiffModal);
+  const settings = useSettingsSnapshot();
+  const [tab, setTab] = (0, import_react4.useState)("hunks");
+  const [portalHost, setPortalHost] = (0, import_react4.useState)(null);
+  const dialogRef = (0, import_react4.useRef)(null);
   const callId = payload2 === null ? null : payload2.callId;
-  const languageId = (0, import_react3.useMemo)(
+  const languageId = (0, import_react4.useMemo)(
     () => payload2 === null ? null : detectLanguage(payload2.absolutePath ?? payload2.filePath, payload2.diff?.afterText ?? payload2.diff?.beforeText ?? ""),
     [payload2]
   );
-  const highlighter = (0, import_react3.useMemo)(
+  const highlighter = (0, import_react4.useMemo)(
     () => settings.syntaxHighlight !== false && languageId !== null && payload2?.diff !== null && payload2?.diff !== void 0 ? getDiffHighlighter(payload2.diff, languageId) : null,
     [payload2, languageId, settings.syntaxHighlight]
   );
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     setPortalHost(document.body);
   }, []);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     setTab("hunks");
   }, [callId]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     if (payload2 === null) return;
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
@@ -21958,7 +22551,7 @@ function DiffModal({ t }) {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [payload2]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     if (payload2 === null) return;
     dialogRef.current?.focus?.();
   }, [payload2]);
@@ -21971,7 +22564,7 @@ function DiffModal({ t }) {
   const oldLines = diff2.oldLineCount;
   const newLines = diff2.newLineCount;
   const close = () => closeDiffModal();
-  const overlay = /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react3.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay-root", "data-open": "true", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay", onClick: close, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  const overlay = /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react4.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay-root", "data-open": "true", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay", onClick: close, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
     "div",
     {
       className: "did-dialog",
@@ -22026,7 +22619,7 @@ function DiffModal({ t }) {
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", className: "did-close", onClick: close, "aria-label": t("close"), title: t("close"), children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Icon, { kind: "close", size: 13 }) })
         ] }),
-        payload2.notice !== null && payload2.notice !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-notice did-dialog-notice", children: noticeText(payload2.notice, t) }) : null,
+        payload2.notice !== null && payload2.notice !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-notice did-dialog-notice", children: noticeText(payload2.notice, t, diff2.truncated === true) }) : null,
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(PanesHead, { t }),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-dialog-body", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(SideBySide, { diff: diff2, mode: activeTab, pathLabel: payload2.filePath, t, highlighter }) }),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-dialog-foot", children: [
@@ -22044,397 +22637,227 @@ function DiffModal({ t }) {
   return portalHost === null ? overlay : (0, import_react_dom.createPortal)(overlay, portalHost);
 }
 
-// src/client/locales.js
-var NS = "inline-diff";
-var zh = {
-  "title.edit": "编辑",
-  "title.write": "写入",
-  "title.strReplace": "替换编辑",
-  "langUnknown": "未知语言",
-  "langPlaintext": "纯文本",
-  "langTitle": "语言：{name}",
-  "op.create": "新建文件",
-  "op.update": "更新文件",
-  "op.overwrite": "覆盖写入",
-  "state.preparing": "准备中",
-  "state.running": "执行中",
-  "state.error": "失败",
-  "state.stopped": "已中止",
-  "hunks": "{n} 处修改",
-  "hunk.i": "修改点 {i}/{n}",
-  "gutterOld": "旧",
-  "gutterNew": "新",
-  "noChanges": "内容无变化",
-  "noDiff": "没有可展示的差异",
-  "zoom": "放大",
-  "collapse": "收起",
-  "expand": "展开",
-  "modal.title": "修改对比",
-  "tab.hunks": "变更块",
-  "tab.full": "全文对照",
-  "close": "关闭",
-  "before": "修改前",
-  "after": "修改后",
-  "oldFile": "旧文件 {n} 行",
-  "newFile": "新文件 {n} 行",
-  "gapUnchanged": "{n} 行未修改",
-  "shift": "行号顺延 {delta}",
-  "shiftDown": "行号顺延 −{delta}",
-  "movedTo": "移至 新 L{line}",
-  "movedToRange": "移至 新 L{from}–L{to}",
-  "movedFrom": "移自 旧 L{line}",
-  "movedFromRange": "移自 旧 L{from}–L{to}",
-  "inlineMore": "另有 {n} 行未展开，点击「放大」查看全部",
-  "openViewer": "左右对照",
-  "preview": "执行中的预览（精确行号将在完成后标注）",
-  "lineUnknown": "行号待定",
-  "snapshotSource": "按执行快照精确对照",
-  "argsSource": "按调用参数重建",
-  "locatedSource": "按文件定位行号",
-  "failedSummary": "文件修改失败",
-  "loading": "读取文件上下文…",
-  "fullTooLarge": "文件较大，全文对照不可用",
-  "fullHistoryUnavailable": "历史回放缺少修改前全文，全文对照不可用",
-  "fullLocateUnavailable": "历史回放缺少修改前全文，且行号无法定位，全文对照不可用",
-  "fullToolUnavailable": "该工具调用不保存执行快照，全文对照不可用",
-  "noticeHistory": "这是历史回放：只能读取修改块和行号，修改前全文已不可用，因此「全文对照」置灰；当前实时修改的卡片仍可全文对照。",
-  "noticeLocate": "这是历史回放：修改前全文已不可用，且当前文件已变化、无法定位行号；只展示修改块，行号标记为待定。",
-  "noticeTool": "该工具调用不保存执行快照：只能展示修改块与行号，「全文对照」不可用。",
-  "noticeToolLocate": "该工具调用不保存执行快照，且当前文件已变化、无法定位行号；只展示修改块，行号标记为待定。",
-  "noticeHuge": "文件较大（旧 {old} 行 / 新 {new} 行），已切换为差异块模式：保留逐行号与修改点，移动识别与「全文对照」不可用。",
-  "noticeCoarse": "文件较大，已使用粗粒度对齐：颜色与行号仍准确，移动识别已关闭。",
-  "noticeLinesPending": "未能读取当前文件，行号标记为待定；差异内容仍按工具记录展示。",
-  "openFile": "在文件面板中打开",
-  "hunkHeader": "旧 {old} → 新 {new}",
-  "hunkHeaderNew": "新文件 {new}",
-  "hunkHeaderDel": "删除 旧 {old}",
-  "added": "新增 {n} 行",
-  "removed": "删除 {n} 行",
-  "unknownRange": "行号待定",
-  "fullNote": "共 {n} 行；超出显示上限的部分已截断",
-  "emptyFile": "（空文件）",
-  "settings.nav": "内联差异",
-  "settings.short": "差异样式",
-  "settings.title": "内联差异 · 显示样式",
-  "settings.description": "只影响 Web 界面的展示方式，不改变会话记录、模型输入或工具执行。「展开风格」采用平板、透明的输出效果：文件修改显示逐次内联差异，命令与其它工具默认展开 IN/OUT；「DSH 原生」保持官方样式。",
-  "settings.fileCards": "文件修改卡片",
-  "settings.fileCardsDesc": "edit / write / str_replace_editor 工具调用在对话中的展示方式。展开风格显示逐次内联差异卡片，DSH 原生显示官方文件修改行。",
-  "settings.syntax": "语法高亮",
-  "settings.syntaxDesc": "按扩展名、特殊文件名（如 Dockerfile、Makefile）或脚本首行（shebang）识别文件语言，只改变代码文字颜色，不影响文件内容与差异标记。高亮配色刻意避开红色与绿色，避免与新增/删除标记混淆。",
-  "settings.syntaxOn": "开启",
-  "settings.syntaxOff": "关闭",
-  "settings.languageBadge": "语言标识",
-  "settings.languageBadgeDesc": "显示在卡片标题栏的文件路径旁，放大弹窗中也会显示。只占一小枚徽章，不改动现有布局，窄屏时自然截断。选择「隐藏」会隐藏全部语言徽章（含纯文本与未知语言）。",
-  "settings.badgeShort": "短代码",
-  "settings.badgeFull": "全名",
-  "settings.badgeHidden": "隐藏",
-  "settings.unknownLanguage": "未知语言",
-  "settings.unknownLanguageDesc": "识别不到语言时的处理：显示「未知语言」徽章，或完全不显示语言标识。此时不做语法高亮，代码使用默认前景色（跟随当前浅色/深色外观），新增/删除标记不受影响。",
-  "settings.unknownShow": "显示“未知语言”",
-  "settings.unknownHidden": "不显示",
-  "settings.syntaxEmphasis": "字体强调",
-  "settings.syntaxEmphasisDesc": "在配色之外给关键词、类型与函数名加粗，注释用斜体；关闭后只用颜色区分，观感更克制。",
-  "settings.emphasisOn": "颜色 + 字体样式",
-  "settings.emphasisOff": "仅颜色",
-  "settings.supportedLanguages": "支持的语言",
-  "settings.supportedLanguagesNote": "已支持 {n} 种语言（按扩展名、特殊文件名与脚本首行识别）。语法高亮配色刻意避开红色与绿色，避免和新增/删除标记混淆。",
-  "settings.syntaxToggleNote": "关闭高亮后，代码仍按当前浅色/深色外观使用默认前景色显示。",
-  "settings.shellRows": "命令执行行",
-  "settings.shellRowsDesc": "bash / pwsh / win_bash 工具调用的展示方式。展开风格默认展开 IN/OUT，DSH 原生显示官方命令行。",
-  "settings.shellTone": "外壳配色",
-  "settings.innerTone": "内部配色",
-  "settings.toneAutoShell": "自动（主题+外观）",
-  "settings.toneAutoInner": "自动（官方外观）",
-  "settings.toneLight": "浅色",
-  "settings.toneDark": "深色",
-  "settings.toneSameShell": "与外壳一致",
-  "settings.toolCalls": "其它工具调用",
-  "settings.toolCallsDesc": "普通、详情、搜索与网页类工具调用（查询运行时、任务与会话、grep / glob、web_search / web_fetch 等）。展开风格默认展开 IN/OUT 并保留折叠按钮；读取、待办、提问、图片等富结果卡片保持原生。开启本项会即时生效，并自动把「过程折叠」切换为不折叠，否则展开行会被 DSH 折叠组遮住。",
-  "settings.toolCallsNeedsFlat": "提示：当前「过程折叠」为 DSH 原生，已完成的工具行会被收进折叠组；要直接看到展开效果，请把「过程折叠」也切换为「不折叠」。",
-  "settings.transcript": "过程折叠（整份对话）",
-  "settings.transcriptEnhancedNote": "启用 DSH 官方的 Verbose 对话记录偏好：整轮过程不折叠、工具行平板展示。设置会持久保存，可在 DSH 设置 → 通用 → 对话记录样式中恢复。",
-  "settings.transcriptNativeNote": "保持你当前在 DSH 中的对话记录偏好，插件不会改动它。",
-  "settings.styleEnhanced": "展开风格",
-  "settings.styleNative": "DSH 原生",
-  "settings.flat": "不折叠",
-  "settings.subagentNote": "子代理会话与主会话共用这套设置；差异快照按各自 Session 独立记录，互不影响。",
-  "settings.dsmCurrent": "当前 DSH 对话记录模式：{mode}",
-  "settings.reset": "恢复默认",
-  "settings.saving": "正在保存…",
-  "settings.live": "设置自动生效",
-  "shell.in": "IN",
-  "shell.out": "OUT",
-  "tool.in": "IN",
-  "tool.out": "OUT",
-  "tool.fallbackTitle": "工具调用",
-  "readFrom": "L {line} 起",
-  "inspectTrajectory": "在轨迹中查看",
-  "inspectShort": "轨迹",
-  "gapRange": "旧 {old} → 新 {new}",
-  "search.matches": "{n} 处匹配",
-  "search.files": "{n} 个文件",
-  "web.sources": "{n} 个来源",
-  "web.status": "HTTP {code}",
-  "toolTitle.create_goal": "创建目标",
-  "toolTitle.get_goal": "查看目标",
-  "toolTitle.update_goal": "更新目标",
-  "toolTitle.schedule_create": "创建定时任务",
-  "toolTitle.schedule_list": "查看定时任务",
-  "toolTitle.schedule_view": "查看定时任务详情",
-  "toolTitle.schedule_edit": "编辑定时任务",
-  "toolTitle.schedule_delete": "删除定时任务",
-  "toolTitle.schedule_update": "更新定时任务",
-  "toolTitle.grep": "搜索文件内容",
-  "toolTitle.glob": "搜索文件",
-  "toolTitle.web_search": "网页搜索",
-  "toolTitle.web_fetch": "抓取网页",
-  "toolTitle.cordis_inspect_list": "检查提供方",
-  "toolTitle.cordis_inspect_query": "查询运行时",
-  "toolTitle.cordis_inspect_self": "检查动态插件",
-  "toolTitle.workflow": "运行工作流",
-  "toolTitle.ralph": "运行循环工作流",
-  "toolTitle.session_event_read": "读取事件",
-  "toolTitle.session_event_search": "搜索事件",
-  "toolTitle.session_event_trace": "追踪事件",
-  "toolTitle.session_search": "搜索会话",
-  "toolTitle.session_trace": "追踪会话",
-  "toolTitle.list_subagent_models": "查看可用模型",
-  "toolTitle.subagent": "创建子智能体",
-  "toolTitle.list_agents": "查看子智能体",
-  "toolTitle.send_message": "发送消息",
-  "toolTitle.interrupt_agent": "中断智能体",
-  "toolTitle.spawn_teammate": "创建队友",
-  "toolTitle.wait_agent": "等待智能体",
-  "toolTitle.job_list": "查看后台任务",
-  "toolTitle.job_output": "读取任务输出",
-  "toolTitle.job_kill": "取消后台任务",
-  "toolTitle.terminal_open": "创建终端",
-  "toolTitle.terminal_read": "读取终端",
-  "toolTitle.terminal_list": "查看终端",
-  "toolTitle.terminal_signal": "发送终端信号",
-  "toolTitle.terminal_close": "关闭终端",
-  "toolTitle.lsp": "语言服务",
-  "toolTitle.team_task_create": "创建团队任务",
-  "toolTitle.team_task_get": "查看团队任务",
-  "toolTitle.team_task_update": "更新团队任务",
-  "toolTitle.team_task_list": "查看团队任务列表"
-};
-var en = {
-  "title.edit": "Edit",
-  "title.write": "Write",
-  "title.strReplace": "Replace",
-  "langUnknown": "Unknown",
-  "langPlaintext": "Plain text",
-  "langTitle": "Language: {name}",
-  "op.create": "New file",
-  "op.update": "Updated file",
-  "op.overwrite": "Overwritten",
-  "state.preparing": "Preparing",
-  "state.running": "Running",
-  "state.error": "Failed",
-  "state.stopped": "Stopped",
-  "hunks": "{n} changes",
-  "hunk.i": "Change {i}/{n}",
-  "gutterOld": "OLD",
-  "gutterNew": "NEW",
-  "noChanges": "No content change",
-  "noDiff": "No diff to show",
-  "zoom": "Expand",
-  "collapse": "Collapse",
-  "expand": "Expand",
-  "modal.title": "Change comparison",
-  "tab.hunks": "Changes",
-  "tab.full": "Whole file",
-  "close": "Close",
-  "before": "Before",
-  "after": "After",
-  "oldFile": "Before · {n} lines",
-  "newFile": "After · {n} lines",
-  "gapUnchanged": "{n} unchanged lines",
-  "shift": "line numbers shifted {delta}",
-  "shiftDown": "line numbers shifted −{delta}",
-  "movedTo": "moved to new L{line}",
-  "movedToRange": "moved to new L{from}–L{to}",
-  "movedFrom": "moved from old L{line}",
-  "movedFromRange": "moved from old L{from}–L{to}",
-  "inlineMore": "{n} more lines not shown — use “Expand” to see all",
-  "openViewer": "Side-by-side",
-  "preview": "Live preview — exact line numbers appear when the edit settles",
-  "lineUnknown": "line numbers pending",
-  "snapshotSource": "Exact comparison from the execution snapshot",
-  "argsSource": "Rebuilt from the call arguments",
-  "locatedSource": "Line numbers located in the file",
-  "failedSummary": "File change failed",
-  "loading": "Reading file context…",
-  "fullTooLarge": "File is large — whole-file comparison unavailable",
-  "fullHistoryUnavailable": "Before-image text is unavailable for replayed history; whole-file comparison is unavailable",
-  "fullLocateUnavailable": "Before-image text and line numbers are unavailable for replayed history; whole-file comparison is unavailable",
-  "fullToolUnavailable": "This tool call keeps no execution snapshot; whole-file comparison is unavailable",
-  "noticeHistory": "Replayed history: only the changed hunks and line numbers are available, so the whole-file tab is disabled. Cards from the live session still support it.",
-  "noticeLocate": "Replayed history: the before-image is unavailable and the current file no longer matches that edit, so line numbers cannot be located; only the changed hunks are shown.",
-  "noticeTool": "This tool call keeps no execution snapshot: only the changed hunks and line numbers are shown, so whole-file comparison is unavailable.",
-  "noticeToolLocate": "This tool call keeps no execution snapshot and the current file no longer matches that edit, so line numbers cannot be located; only the changed hunks are shown.",
-  "noticeHuge": "Large file (before: {old} lines, after: {new} lines) — switched to changed-hunk mode: line numbers and hunks are kept; moved-block detection and the whole-file tab are unavailable.",
-  "noticeCoarse": "Large file — coarse alignment in use. Coloring and line numbers stay accurate; moved-block detection is off.",
-  "noticeLinesPending": "The current file could not be read, so line numbers are pending; the recorded diff is still shown.",
-  "openFile": "Open in file panel",
-  "hunkHeader": "old {old} → new {new}",
-  "hunkHeaderNew": "new file {new}",
-  "hunkHeaderDel": "deleted old {old}",
-  "added": "{n} added",
-  "removed": "{n} removed",
-  "unknownRange": "line numbers pending",
-  "fullNote": "{n} lines total; display capped",
-  "emptyFile": "(empty file)",
-  "settings.nav": "Inline Diff",
-  "settings.short": "Diff style",
-  "settings.title": "Inline Diff · Display",
-  "settings.description": "Presentation only: session records, model input, and tool execution are unchanged. The expanded style gives flat, transparent output — per-edit inline diffs for file changes and IN/OUT expanded by default for commands and other tools; DSH native keeps the stock presentation.",
-  "settings.fileCards": "File-change cards",
-  "settings.fileCardsDesc": "How edit / write / str_replace_editor calls render. Expanded shows per-edit inline diff cards; DSH native shows the stock file-mutation row.",
-  "settings.syntax": "Syntax highlighting",
-  "settings.syntaxDesc": "Detects the file language from its extension, special filenames (Dockerfile, Makefile, …), or a script shebang, and only changes code text colors — file contents and diff markers are untouched. Highlight colors deliberately avoid red and green so they never read as added/removed markers.",
-  "settings.syntaxOn": "On",
-  "settings.syntaxOff": "Off",
-  "settings.languageBadge": "Language badge",
-  "settings.languageBadgeDesc": "Shown next to the file path in the card title bar and in the expanded dialog. A small badge that does not disturb the existing layout and truncates naturally on narrow screens. “Hidden” hides every language badge, including the plain-text and unknown-language markers.",
-  "settings.badgeShort": "Short code",
-  "settings.badgeFull": "Full name",
-  "settings.badgeHidden": "Hidden",
-  "settings.unknownLanguage": "Unknown language",
-  "settings.unknownLanguageDesc": "What to show when the language cannot be detected: a neutral “Unknown” badge, or no badge at all. Syntax highlighting is skipped in that case, so code uses the default foreground color for the current light/dark appearance; added/removed markers are unaffected.",
-  "settings.unknownShow": "Show “Unknown”",
-  "settings.unknownHidden": "Hide",
-  "settings.syntaxEmphasis": "Font emphasis",
-  "settings.syntaxEmphasisDesc": "Beyond color, bold keywords, types, and function names and italicize comments; turning it off keeps color only for a more restrained look.",
-  "settings.emphasisOn": "Color + font style",
-  "settings.emphasisOff": "Color only",
-  "settings.supportedLanguages": "Supported languages",
-  "settings.supportedLanguagesNote": "Supports {n} languages (detected by extension, special filenames, and script shebang). Highlight colors deliberately avoid red and green so they are never confused with added/removed markers.",
-  "settings.syntaxToggleNote": "When highlighting is off, code keeps the default foreground color for the current light/dark appearance.",
-  "settings.shellRows": "Command rows",
-  "settings.shellRowsDesc": "How bash / pwsh / win_bash calls render. Expanded shows IN/OUT open; DSH native shows the stock command row.",
-  "settings.shellTone": "Shell tone",
-  "settings.innerTone": "Inner tone",
-  "settings.toneAutoShell": "Auto (theme + appearance)",
-  "settings.toneAutoInner": "Auto (official appearance)",
-  "settings.toneLight": "Light",
-  "settings.toneDark": "Dark",
-  "settings.toneSameShell": "Same as shell",
-  "settings.toolCalls": "Other tool calls",
-  "settings.toolCallsDesc": "Generic, details, search, and web tool calls such as runtime queries, session/job queries, grep / glob, and web_search / web_fetch. Expanded shows IN/OUT open with a fold button; rich cards (read, todo, questions, images) stay native. Enabling this applies instantly and also unfolds completed turns, otherwise DSH folding would hide the expanded rows.",
-  "settings.toolCallsNeedsFlat": "Note: process folding is DSH-native, so completed tool rows stay inside folded groups. Switch Process folding to Unfolded to see the expanded rows directly.",
-  "settings.transcript": "Process folding (whole chat)",
-  "settings.transcriptEnhancedNote": "Uses DSH's official Verbose transcript preference: completed turns stay unfolded and tool rows stay flat. It is persisted and can be restored in DSH Settings → General → Transcript.",
-  "settings.transcriptNativeNote": "Keep your current DSH transcript preference; the plugin does not modify it.",
-  "settings.styleEnhanced": "Expanded",
-  "settings.styleNative": "DSH native",
-  "settings.flat": "Unfolded",
-  "settings.subagentNote": "Subagent sessions use the same settings; diff snapshots are recorded per Session and never interfere.",
-  "settings.dsmCurrent": "Current DSH transcript mode: {mode}",
-  "settings.reset": "Reset to defaults",
-  "settings.saving": "Saving…",
-  "settings.live": "Settings apply automatically",
-  "shell.in": "IN",
-  "shell.out": "OUT",
-  "tool.in": "IN",
-  "tool.out": "OUT",
-  "tool.fallbackTitle": "Tool call",
-  "readFrom": "from L {line}",
-  "inspectTrajectory": "Inspect in trajectory",
-  "inspectShort": "Trace",
-  "gapRange": "old {old} → new {new}",
-  "search.matches": "{n} matches",
-  "search.files": "{n} files",
-  "web.sources": "{n} sources",
-  "web.status": "HTTP {code}",
-  "toolTitle.create_goal": "Create goal",
-  "toolTitle.get_goal": "Get goal",
-  "toolTitle.update_goal": "Update goal",
-  "toolTitle.schedule_create": "Create schedule",
-  "toolTitle.schedule_list": "List schedules",
-  "toolTitle.schedule_view": "View schedule",
-  "toolTitle.schedule_edit": "Edit schedule",
-  "toolTitle.schedule_delete": "Delete schedule",
-  "toolTitle.schedule_update": "Update schedule",
-  "toolTitle.grep": "Search file contents",
-  "toolTitle.glob": "Find files",
-  "toolTitle.web_search": "Web search",
-  "toolTitle.web_fetch": "Fetch page",
-  "toolTitle.cordis_inspect_list": "Inspect providers",
-  "toolTitle.cordis_inspect_query": "Query runtime",
-  "toolTitle.cordis_inspect_self": "Inspect plugins",
-  "toolTitle.workflow": "Run workflow",
-  "toolTitle.ralph": "Run loop workflow",
-  "toolTitle.session_event_read": "Read event",
-  "toolTitle.session_event_search": "Search events",
-  "toolTitle.session_event_trace": "Trace event",
-  "toolTitle.session_search": "Search sessions",
-  "toolTitle.session_trace": "Trace session",
-  "toolTitle.list_subagent_models": "List models",
-  "toolTitle.subagent": "Create subagent",
-  "toolTitle.list_agents": "List subagents",
-  "toolTitle.send_message": "Send message",
-  "toolTitle.interrupt_agent": "Interrupt agent",
-  "toolTitle.spawn_teammate": "Spawn teammate",
-  "toolTitle.wait_agent": "Wait agent",
-  "toolTitle.job_list": "List jobs",
-  "toolTitle.job_output": "Read job output",
-  "toolTitle.job_kill": "Kill job",
-  "toolTitle.terminal_open": "Open terminal",
-  "toolTitle.terminal_read": "Read terminal",
-  "toolTitle.terminal_list": "List terminals",
-  "toolTitle.terminal_signal": "Signal terminal",
-  "toolTitle.terminal_close": "Close terminal",
-  "toolTitle.lsp": "Language service",
-  "toolTitle.team_task_create": "Create team task",
-  "toolTitle.team_task_get": "Get team task",
-  "toolTitle.team_task_update": "Update team task",
-  "toolTitle.team_task_list": "List team tasks"
-};
-var dicts = { zh, en };
+// src/client/i18n.js
+function hostLanguageKind(hostLanguage) {
+  if (typeof hostLanguage !== "string") return void 0;
+  const normalized = hostLanguage.trim().toLowerCase().replace(/_/g, "-");
+  if (normalized === "") return void 0;
+  const primary = normalized.split("-")[0];
+  if (primary === "zh") return "zh";
+  if (primary === "en") return "en";
+  return "en";
+}
+function resolveLanguage(setting, hostLanguage) {
+  if (setting === "zh") return "zh";
+  if (setting === "en") return "en";
+  if (setting !== "auto") return DEFAULT_LANGUAGE;
+  const host = hostLanguageKind(hostLanguage);
+  if (host === "zh") return "zh";
+  if (host === "en") return "en";
+  return DEFAULT_LANGUAGE;
+}
+function lookupDictionary(dictionary, language, key) {
+  try {
+    if (dictionary === null || typeof dictionary !== "object") return void 0;
+    const table = dictionary[language];
+    if (table === null || typeof table !== "object") return void 0;
+    if (!Object.prototype.hasOwnProperty.call(table, key)) return void 0;
+    const value = table[key];
+    return typeof value === "string" ? value : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function formatTemplate(template, params) {
+  if (params === null || typeof params !== "object") return template;
+  return template.replace(/\{(\w+)\}/g, (match, name) => {
+    if (!Object.prototype.hasOwnProperty.call(params, name)) return match;
+    let value;
+    try {
+      value = params[name];
+    } catch {
+      return match;
+    }
+    if (value === void 0 || value === null) return match;
+    try {
+      return String(value);
+    } catch {
+      return match;
+    }
+  });
+}
+function translate(dictionary, language, key, params) {
+  if (typeof key !== "string") return "";
+  try {
+    const wanted = typeof language === "string" && language !== "" ? language : DEFAULT_LANGUAGE;
+    const template = lookupDictionary(dictionary, wanted, key) ?? lookupDictionary(dictionary, DEFAULT_LANGUAGE, key) ?? key;
+    return formatTemplate(template, params);
+  } catch {
+    return key;
+  }
+}
+var translatorCache = /* @__PURE__ */ new WeakMap();
+function translatorFor(dictionary, language) {
+  const table = dictionary !== null && typeof dictionary === "object" ? dictionary : {};
+  let perLanguage = translatorCache.get(table);
+  if (perLanguage === void 0) {
+    perLanguage = /* @__PURE__ */ new Map();
+    translatorCache.set(table, perLanguage);
+  }
+  const wanted = typeof language === "string" && language !== "" ? language : DEFAULT_LANGUAGE;
+  let translator = perLanguage.get(wanted);
+  if (translator === void 0) {
+    translator = (key, params) => translate(table, wanted, key, params);
+    perLanguage.set(wanted, translator);
+  }
+  return translator;
+}
+var reactRuntime = null;
+function installI18nRuntime(runtime) {
+  reactRuntime = runtime !== null && typeof runtime === "object" ? runtime : null;
+}
+var hostLocaleFace = null;
+var hostLanguageListeners = /* @__PURE__ */ new Set();
+function getHostLanguage() {
+  try {
+    const snapshot = hostLocaleFace?.getSnapshot?.();
+    const active = snapshot !== null && typeof snapshot === "object" ? snapshot.active : void 0;
+    return typeof active === "string" && active !== "" ? active : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function notifyHostLanguage() {
+  for (const listener of [...hostLanguageListeners]) {
+    try {
+      listener();
+    } catch {
+    }
+  }
+}
+function subscribeHostLanguage(listener) {
+  hostLanguageListeners.add(listener);
+  return () => {
+    hostLanguageListeners.delete(listener);
+  };
+}
+function attachHostLocale(face) {
+  if (face === null || typeof face !== "object") return () => {
+  };
+  hostLocaleFace = face;
+  let unsubscribe = () => {
+  };
+  try {
+    if (typeof face.subscribe === "function") {
+      const off = face.subscribe(() => notifyHostLanguage());
+      if (typeof off === "function") unsubscribe = off;
+    }
+  } catch {
+    unsubscribe = () => {
+    };
+  }
+  notifyHostLanguage();
+  return () => {
+    try {
+      unsubscribe();
+    } catch {
+    }
+    if (hostLocaleFace === face) hostLocaleFace = null;
+  };
+}
+function getPluginLanguage() {
+  let setting;
+  try {
+    setting = getSettings()?.language;
+  } catch {
+    setting = void 0;
+  }
+  return resolveLanguage(setting, getHostLanguage());
+}
+function subscribePluginLanguage(listener) {
+  let last = getPluginLanguage();
+  const check = () => {
+    const next = getPluginLanguage();
+    if (next === last) return;
+    last = next;
+    try {
+      listener();
+    } catch {
+    }
+  };
+  let offSettings = () => {
+  };
+  let offHost = () => {
+  };
+  try {
+    offSettings = subscribeSettings(check);
+  } catch {
+    offSettings = () => {
+    };
+  }
+  try {
+    offHost = subscribeHostLanguage(check);
+  } catch {
+    offHost = () => {
+    };
+  }
+  return () => {
+    offSettings();
+    offHost();
+  };
+}
+function pluginTranslate(key, params) {
+  return translate(dicts, getPluginLanguage(), key, params);
+}
+function withPluginI18n(Component) {
+  if (typeof Component !== "function") return Component;
+  function PluginI18nBound(props) {
+    const runtime = reactRuntime;
+    if (runtime === null || typeof runtime.useSyncExternalStore !== "function") {
+      return typeof runtime?.createElement === "function" ? runtime.createElement(Component, props) : null;
+    }
+    const language = runtime.useSyncExternalStore(subscribePluginLanguage, getPluginLanguage, getPluginLanguage);
+    const t = translatorFor(dicts, language);
+    return runtime.createElement(Component, { ...props, t });
+  }
+  const name = typeof Component.displayName === "string" && Component.displayName !== "" ? Component.displayName : typeof Component.name === "string" && Component.name !== "" ? Component.name : "Component";
+  PluginI18nBound.displayName = `withPluginI18n(${name})`;
+  return PluginI18nBound;
+}
 
 // src/client/styles.js
 var CSS = `
-/* ---- appearance-aware surfaces -------------------------------------------
-   Shell (card frame, dialogs, headers, footers) follows the active theme and
-   the host light/dark setting: layering the theme's own surface token over an
-   appearance-specific opaque base keeps the blue/gold/or whatever hue of the
-   theme while avoiding translucent, washed-out windows.
-   Inner content (diff rows, command execution, tool IO) follows the official
-   DSH light/dark code-block palette instead: dark near-black gray, light
-   near-white gray, with matching foreground colors so text never blends into
-   the background.
+/* ---- 外观感知的表面配色 ------------------------------------------------
+   外壳（卡片框、弹窗、头/脚）跟随当前主题与宿主浅/深色设置：把主题自己的
+   表面 token 叠在“外观专属的不透明底色”上，既保留主题的蓝/金/任意色相，又避免
+   半透明、发灰的窗口。
+   内部内容（差异行、命令执行、工具 IO）则跟随 DSH 官方浅/深色代码块配色：
+   深色近黑灰、浅色近白灰，并配对应前景色，文字不会与背景糊在一起。
 
-   The derived variables are declared on \`body\`, not \`:root\`: the official DSH
-   theme (and the descriptors injected by skin-center) define their
-   \`--dsw-alias-*\` tokens on \`body\`. A var() declared on \`:root\` resolves on the
-   root element, where those body-level tokens do not exist yet, so every
-   surface would silently keep the literal fallbacks and never follow the
-   theme. Declaring them on \`body\` resolves the theme tokens against the same
-   element that defines them (and keeps working for skins that define their
-   tokens on the root, because body inherits them). */
+   派生变量声明在 body 而不是 :root：官方 DSH 主题（以及皮肤中心注入的
+   描述符）把 --dsw-alias-* token 声明在 body 上。声明在 :root 的 var()
+   会在根元素解析，而根元素上没有那些 body 级 token，于是所有表面都会静默保留
+   字面 fallback、永远不跟随主题。声明在 body 上则与定义 token 的元素相同，
+   解析得到主题颜色（对把 token 定义在根上的皮肤同样有效，因为 body 会继承）。 */
 body {
   --did-fg-primary: #eef1f8;
   --did-fg-secondary: #c3cade;
   --did-fg-tertiary: #94a1bc;
   --did-border-1: rgba(151, 169, 216, 0.24);
   --did-border-2: rgba(151, 169, 216, 0.42);
-  /* dark appearance: neutral opaque underlay so the shell hue comes from the
-     theme's own surface token (blue with the maid skin, gray with the official
-     theme, whatever hue other themes define). */
+  /* 深色外观：中性不透明底层，外壳色相来自主题自己的表面 token
+   （女仆皮肤下是蓝色、官方主题下是灰色、其它主题是各自色相）。 */
   --did-shell-base: #101216;
   --did-shell-tint: var(--dsw-alias-bg-layer-1, #1a1c22);
   --did-shell-tint-2: var(--dsw-alias-bg-layer-2, #202329);
   --did-surface-1: var(--dsw-alias-bg-layer-1, #1a1c22);
   --did-surface-2: var(--dsw-alias-bg-layer-2, #202329);
-  /* Elevated surfaces (settings dialog) use the theme's layer-2 surface, not
-     --dsw-alias-bg-overlay: in the official dark theme the overlay token is a
-     mid-gray (around #61666b) meant for scrims, so a dialog filled with it looks
-     washed out/white against the dark UI. */
+  /* 抬升表面（设置弹窗）使用主题的 layer-2 表面，而不是
+   --dsw-alias-bg-overlay：官方深色主题里 overlay token 是给遮罩用的中灰
+   （约 #61666b），用它填充弹窗会显得发白/发灰。 */
   --did-surface-elevated: var(--dsw-alias-bg-layer-2, #202329);
   --did-dialog-surface: var(--dsw-alias-bg-layer-1, #1a1c22);
-  /* inner content uses the official dark code-block palette, not the theme */
+  /* 内部内容使用官方深色代码块配色，而不是主题色 */
   --did-io-bg: #1b1d21;
   --did-io-fg: #e9ebef;
   --did-io-muted: #9199a8;
@@ -22449,8 +22872,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-fg-tertiary: #6f7c99;
   --did-border-1: rgba(71, 91, 145, 0.24);
   --did-border-2: rgba(71, 91, 145, 0.42);
-  /* light appearance: neutral near-white underlay, shell hue again comes from
-     the theme's own light surface token. */
+  /* 浅色外观：中性近白底层，外壳色相同样来自主题自己的浅色表面 token。 */
   --did-shell-base: #ffffff;
   --did-shell-tint: var(--dsw-alias-bg-layer-1, #f4f6f9);
   --did-shell-tint-2: var(--dsw-alias-bg-layer-2, #edf0f4);
@@ -22458,7 +22880,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-surface-2: var(--dsw-alias-bg-layer-2, #edf0f4);
   --did-surface-elevated: var(--dsw-alias-bg-layer-2, #edf0f4);
   --did-dialog-surface: var(--dsw-alias-bg-layer-1, #f4f6f9);
-  /* inner content uses the official light code-block palette */
+  /* 内部内容使用官方浅色代码块配色 */
   --did-io-bg: #f8f9fb;
   --did-io-fg: #1b1c1e;
   --did-io-muted: #6a7280;
@@ -22467,9 +22889,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-seg-active: color-mix(in srgb, var(--dsw-alias-brand-primary, #5686fe) 18%, #ffffff);
   --did-accent: var(--dsw-alias-brand-primary, #5686fe);
 }
-/* ---- per-card-type shell / inner tone overrides --------------------------
-   Set by the settings panel on each rendered card; the values here override
-   the document-level appearance variables for that card only. */
+/* ---- 每类卡片的“外壳 / 内部”配色覆盖 --------------------------------
+   由设置面板写到每张已渲染卡片上；这里的值只覆盖该卡片的文档级外观变量。 */
 [data-shell-tone='light'] {
   --did-shell-base: #ffffff;
   --did-surface-1: #f4f6f9;
@@ -22514,14 +22935,13 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-io-muted: var(--did-fg-tertiary);
   --did-io-border: var(--did-border-1);
 }
-/* ---- enhanced flat flat command row (bash / pwsh) ---- */
+/* ---- 增强风格平铺命令执行行（bash / pwsh / win_bash） ---- */
 .enhanced-tool {
   --enhanced-mono: var(--dsw-font-markdown-code-block-small, 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   display: flex;
   flex-direction: column;
-  /* No gap between the head and the IO panel: the IN status bar must reach the
-     title strip without a blank band above it. Spacing is carried by the head
-     padding instead. */
+  /* 头部与 IO 面板之间不留 gap：IN 状态条必须直接顶到标题条，中间不能有空白带。
+   间距由头部的 padding 承担。 */
   gap: 0;
   min-width: 0;
   margin: 4px 0 4px 2px;
@@ -22538,8 +22958,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   line-height: 1.55;
 }
 .enhanced-head { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 1px 5px; }
-/* Body cards: keep breathing room under the title text, but the IO panel and
-   its status bars still touch the title strip. */
+/* 有内容的卡片：标题文字下方保留呼吸空间，但 IO 面板及其状态条仍紧贴标题条。 */
 .enhanced-tool[data-body='true'] .enhanced-head { padding-bottom: 3px; }
 .enhanced-dot {
   flex: none;
@@ -22551,8 +22970,11 @@ body[data-dsh-inline-diff-appearance='light'] {
 .enhanced-tool[data-state='ok'] .enhanced-dot { background: var(--dsw-alias-state-success-primary); }
 .enhanced-tool[data-state='error'] .enhanced-dot { background: var(--dsw-alias-state-error-primary); }
 .enhanced-tool[data-state='stopped'] .enhanced-dot { background: var(--dsw-alias-state-warn-primary); }
+/* 状态点呼吸：与 IN/OUT 色条共用 1.2s 周期与同一相位变量（--did-pulse-phase），
+   保证同一张卡片的圆点和色条同频同相；圆点仍是透明度呼吸，色条是描边颜色呼吸，
+   两者视觉效果不同，只是节奏对齐。不同卡片的相位由 motion.js 按 callId 错开。 */
 .enhanced-tool[data-state='running'] .enhanced-dot,
-.enhanced-tool[data-state='preparing'] .enhanced-dot { background: var(--dsw-alias-brand-primary); animation: dsh-inline-diff-pulse 1.1s ease-in-out infinite; }
+.enhanced-tool[data-state='preparing'] .enhanced-dot { background: var(--dsw-alias-brand-primary); animation: dsh-inline-diff-pulse 1.2s ease-in-out infinite; animation-delay: var(--did-pulse-phase, 0ms); }
 .enhanced-kind { display: inline-flex; flex: none; color: var(--did-fg-tertiary); }
 .enhanced-tool[data-variant='command'] .enhanced-kind { color: var(--dsw-alias-state-success-primary); }
 .enhanced-tool[data-variant='tool'] .enhanced-kind { color: var(--dsw-alias-brand-primary); }
@@ -22649,17 +23071,14 @@ body[data-dsh-inline-diff-appearance='light'] {
   display: grid;
   grid-template-columns: 2.6em minmax(0, 1fr);
   gap: 8px;
-  /* No right padding: the scroll container below reaches the card's right edge
-     so its scrollbar sits against the border (like the diff cards); the scroll
-     content carries the visual inset itself. */
+  /* 右内边距为 0：下面的滚动容器一直延伸到卡片右边缘，滚动条贴着边框（与差异
+   卡片一致）；视觉留白由滚动内容自己承担。 */
   padding: 8px 0 8px 7.5px;
   border-left: 2.5px solid color-mix(in srgb, var(--did-section-bar, var(--dsw-alias-label-tertiary)) 70%, transparent);
 }
-/* IN and OUT own their own status bar, drawn as the section's left border so it
-   can follow the card's rounded bottom corner instead of being clipped by it:
-   IN runs from the title strip down to the IN/OUT hairline, OUT runs from that
-   hairline all the way along the card's curve to the bottom edge. The hairline
-   is the only separator, so the two bars need no extra blank area between them. */
+/* IN 与 OUT 各自拥有状态条，画成分区的左边框，这样它能沿着卡片底部圆角走而不是
+   被圆角裁掉：IN 从标题条向下到 IN/OUT 发丝线，OUT 从发丝线沿卡片曲线一直到
+   底边。发丝线是唯一的分隔物，两条状态条之间不需要额外空白。 */
 .enhanced-section:last-child {
   border-bottom-left-radius: var(--dsw-radius-lg, 16px);
 }
@@ -22673,13 +23092,15 @@ body[data-dsh-inline-diff-appearance='light'] {
   0%, 100% { border-left-color: color-mix(in srgb, var(--did-section-bar) 28%, transparent); }
   50% { border-left-color: color-mix(in srgb, var(--did-section-bar) 92%, transparent); }
 }
+/* IN / OUT 各自按自己的状态决定是否呼吸（互不影响）；呼吸周期与卡片状态点一致，
+   并使用同一张卡片上的相位变量，使同一卡片的圆点与色条同频同相。 */
 .enhanced-section[data-state='running'],
 .enhanced-section[data-state='preparing'] {
   animation: dsh-inline-diff-bar-pulse 1.2s ease-in-out infinite;
+  animation-delay: var(--did-pulse-phase, 0ms);
 }
-/* One independent scroll area per section (IN and OUT each own theirs). The
-   container spans to the card's right edge so its scrollbar is flush with the
-   border; padding-right keeps the code text off the scrollbar. */
+/* 每个分区一个独立滚动区（IN 与 OUT 各自拥有）。容器延伸到卡片右边缘，让滚动条
+   与边框齐平；padding-right 让代码文字不压到滚动条上。 */
 .enhanced-scroll { min-width: 0; max-height: 260px; overflow: auto; padding-right: 10px; }
 .enhanced-scroll-in { max-height: 180px; }
 .enhanced-label {
@@ -22692,8 +23113,8 @@ body[data-dsh-inline-diff-appearance='light'] {
 .enhanced-code {
   min-width: 0;
   margin: 0;
-  /* Default code text follows the inner tone / appearance (light inner = dark
-     text, dark inner = light text) instead of the shell foreground. */
+  /* 代码默认文字颜色跟随内部配色/外观（浅色内层 = 深色文字，深色内层 = 浅色
+   文字），而不是跟随外壳前景色。 */
   color: var(--did-io-fg);
   font-family: var(--enhanced-mono);
   font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 2px);
@@ -22723,7 +23144,7 @@ body[data-dsh-inline-diff-appearance='light'] {
 .enhanced-toggle:hover { color: var(--did-fg-primary); }
 .enhanced-toggle-placeholder { flex: none; width: 14px; height: 14px; }
 
-/* ---- sidebar-foot launcher ---- */
+/* ---- 侧边栏底部启动按钮 ---- */
 .did-launcher {
   display: inline-flex;
   align-items: center;
@@ -22741,7 +23162,7 @@ body[data-dsh-inline-diff-appearance='light'] {
 .did-launcher:hover { background: color-mix(in srgb, var(--did-fg-primary) 7%, transparent); color: var(--did-fg-primary); }
 .did-launcher-label { overflow: hidden; text-overflow: ellipsis; }
 
-/* ---- settings panel / page / modal ---- */
+/* ---- 设置面板 / 设置页 / 设置弹窗 ---- */
 .did-settings-page { max-width: 760px; padding: 4px 0 24px; }
 .did-settings { display: flex; flex-direction: column; min-width: 0; color: var(--did-fg-primary); }
 .did-settings-head { display: flex; align-items: flex-start; gap: 12px; padding: 2px 0 16px; }
@@ -22814,6 +23235,30 @@ body[data-dsh-inline-diff-appearance='light'] {
   font-size: 12px;
   line-height: 18px;
 }
+/* 原创声明（设置页 + 设置弹窗）。醒目但克制：品牌色淡染表面 + 左侧强调竖条；
+   刻意不用红/绿，因为这两种颜色仍保留给删除/新增差异标记。 */
+.did-originality {
+  margin: 12px 0 2px;
+  padding: 10px 14px 11px;
+  border: 0.5px solid color-mix(in srgb, var(--did-accent) 38%, var(--did-border-1));
+  border-inline-start: 3px solid var(--did-accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--did-accent) 8%, var(--did-surface-1));
+  color: var(--did-fg-secondary);
+}
+.did-originality-title {
+  margin-bottom: 3px;
+  color: var(--did-fg-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 19px;
+}
+.did-originality-body {
+  font-size: 12px;
+  line-height: 18px;
+  /* 声明里含一个很长的仓库 URL，必须换行而不是把面板撑宽（窄弹窗/窄页面）。 */
+  overflow-wrap: anywhere;
+}
 .did-settings-error { margin-top: 10px; color: var(--dsw-alias-state-error-primary); font-size: 12px; line-height: 18px; white-space: pre-wrap; }
 .did-settings-foot { display: flex; align-items: center; gap: 10px; padding-top: 14px; }
 .did-settings-reset {
@@ -22863,9 +23308,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   color: var(--did-fg-primary);
   box-shadow: 0 18px 60px color-mix(in srgb, var(--did-fg-primary) 12%, transparent);
 }
-/* Modal header banner: title + description + close stay fixed; the scroll body
-   below is the only scrolling element, so its scrollbar never crosses the
-   banner and the rounded dialog corners clip it instead of letting it spill. */
+/* 弹窗头部横幅：标题、说明与关闭按钮固定；下方滚动区是唯一滚动元素，滚动条
+   不会穿过横幅，圆角弹窗边缘会裁掉它而不是让它溢出。 */
 .did-settings-banner {
   flex: none;
   display: flex;
@@ -22881,8 +23325,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  /* Right padding keeps the scrollbar a little inside the rounded dialog edge
-     instead of hugging (and appearing to spill over) the border. */
+  /* 右内边距让滚动条稍微内缩在圆角边缘里，而不是紧贴（并显得溢出）边框。 */
   padding: 14px 12px 16px 22px;
 }
 .did-settings-scroll .did-settings-body { border-top: 0; }
@@ -22899,8 +23342,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   flex-direction: column;
   min-width: 0;
   margin: 4px 0 4px 2px;
-  /* A touch thicker than the host hairline so the card edge reads as a real
-     surface; the color rows below still bleed all the way to that edge. */
+  /* 比宿主发丝线略粗，让卡片边缘看起来是一块真实表面；下面的色行仍会一直
+   铺到这条边。 */
   border: 0.5px solid color-mix(in srgb, var(--did-border-2) 45%, var(--did-border-1));
   border-inline-width: 0.25px;
   border-radius: var(--dsw-radius-lg, 16px);
@@ -23022,7 +23465,9 @@ body[data-dsh-inline-diff-appearance='light'] {
 .did-state[data-state='error'] { color: var(--dsw-alias-state-error-primary); }
 .did-state[data-state='running'], .did-state[data-state='preparing'] { color: var(--dsw-alias-brand-primary); }
 .did-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
-.did-state[data-state='running'] .did-dot, .did-state[data-state='preparing'] .did-dot { animation: dsh-inline-diff-pulse 1.1s ease-in-out infinite; }
+/* 文件修改卡片的状态点：与命令/工具卡片共用 1.2s 呼吸周期；相位取卡片根节点上的
+   --did-pulse-phase（由 motion.js 按 callId 派生），不同卡片互相错开。 */
+.did-state[data-state='running'] .did-dot, .did-state[data-state='preparing'] .did-dot { animation: dsh-inline-diff-pulse 1.2s ease-in-out infinite; animation-delay: var(--did-pulse-phase, 0ms); }
 @keyframes dsh-inline-diff-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 
 .did-zoom {
@@ -23041,8 +23486,8 @@ body[data-dsh-inline-diff-appearance='light'] {
   cursor: pointer;
 }
 .did-zoom:hover:not([aria-disabled='true']) { color: var(--dsw-alias-brand-primary); border-color: currentColor; }
-/* Not a native disabled button on purpose: it must still swallow the click so
-   the card header (the collapse toggle) never receives it. */
+/* 故意不用原生 disabled 按钮：它必须仍能吞掉点击，让卡片头（折叠开关）永远
+   收不到这次点击。 */
 .did-zoom[aria-disabled='true'] { opacity: 0.4; cursor: default; }
 
 .did-body {
@@ -23088,8 +23533,8 @@ body[data-dsh-inline-diff-appearance='light'] {
 
 .did-row {
   display: grid;
-  /* Compact gutters: both line-number columns stay tabular, but the code text
-     starts much closer to the card edge instead of after a wide blank gutter. */
+  /* 紧凑行号槽：两列行号仍保持等宽数字，但代码文字离卡片边缘更近，不再隔着一大段
+   空白行号槽才开始。 */
   grid-template-columns: 2.2em 2.2em 0.8em minmax(0, 1fr) auto;
   column-gap: 1px;
   min-width: 0;
@@ -23139,8 +23584,8 @@ body[data-dsh-inline-diff-appearance='light'] {
 }
 .did-numhead-label[data-side='old'] { color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 62%, var(--did-fg-tertiary)); }
 .did-numhead-label[data-side='new'] { color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 62%, var(--did-fg-tertiary)); }
-/* Reinforce the mapping on change rows: the gutter that belongs to the changed
-   side is tinted like that side (deleted row → old number, added row → new). */
+/* 在变更行上强化对应关系：属于改动那一侧的行号槽染成该侧颜色
+   （删除行 → 旧行号，新增行 → 新行号）。 */
 .did-row[data-kind='del'] .did-num[data-side='old'] {
   color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 60%, var(--did-fg-tertiary));
   font-weight: 600;
@@ -23179,7 +23624,7 @@ body[data-dsh-inline-diff-appearance='light'] {
 .did-row[data-kind='del'] .did-move { color: var(--dsw-alias-state-error-primary); }
 .did-row[data-kind='add'] .did-move { color: var(--dsw-alias-state-success-primary); }
 
-/* Word/character-level spans: deeper than the row's line-level wash. */
+/* 词/字符级改动片段：比整行级的洗色更深一层。 */
 .did-row[data-kind='del'] .did-seg[data-changed='true'],
 .did-cell[data-kind='del'] .did-seg[data-changed='true'] {
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 32%, transparent);
@@ -23273,7 +23718,7 @@ body[data-dsh-inline-diff-appearance='light'] {
   overflow-wrap: anywhere;
 }
 
-/* ---- root overlay / modal ---- */
+/* ---- 根级浮层 / 对比弹窗 ---- */
 
 .did-overlay-root { position: fixed; inset: 0; z-index: 2147483647; pointer-events: none; }
 .did-overlay-root[data-open='true'] { pointer-events: auto; }
@@ -23367,15 +23812,14 @@ body[data-dsh-inline-diff-appearance='light'] {
 
 .did-sbs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-width: 0; }
 
-/* The before/after strip is part of the dialog header now (outside the
-   scrollable body), so it keeps its own row and never shares space with the
-   body scrollbar. It no longer needs sticky positioning or a stacking level. */
+/* 修改前/后栏头现在是弹窗头部的一部分（在滚动区之外），因此独占一行，永远不会
+   与正文滚动条抢空间；也不再需要 sticky 定位或额外的层叠层级。 */
 .did-panes-head { flex: none; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); background: var(--did-dialog-surface); border-bottom: 0.5px solid var(--did-border-2); }
 .did-pane-label { padding: 5px var(--did-inset-x); color: var(--did-fg-secondary); font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; }
 .did-pane-label + .did-pane-label { border-left: 0.5px solid var(--did-border-1); }
 
-/* Hunk bars stick to the top of the scrollable body: the before/after strip is
-   above that body in normal flow, so the bars can never paint over it. */
+/* hunk 头吸顶于滚动区顶部：修改前/后栏头在正常流里位于该滚动区上方，因此
+   hunk 头永远不可能盖住它。 */
 .did-sbs .did-bar { grid-column: 1 / -1; align-self: start; }
 
 .did-read-main { min-width: 0; }
@@ -23428,10 +23872,9 @@ body[data-dsh-inline-diff-appearance='light'] {
   .did-cell + .did-cell { border-top: 0.5px dashed var(--did-border-2); }
 }
 
-/* ---- settings: supported-language list -----------------------------------
-   Only the layout shell lives here; the badge look itself is the shared
-   .did-lang style injected with the syntax stylesheet, so the settings list
-   and the card header badges stay identical. */
+/* ---- 设置页：支持的语言列表 --------------------------------------------
+   这里只放布局外壳；徽章外观本身是语法高亮样式表里共享的 .did-lang 样式，
+   因此设置页列表与卡片头徽章外观完全一致。 */
 .did-langs-details { margin-top: 8px; }
 .did-langs-details > summary {
   display: inline-flex;
@@ -23506,14 +23949,14 @@ var TOKEN_RULES = `
 .did-tok[data-g='meta'] { color: var(--did-syn-meta); }
 .did-tok[data-g='op'] { color: var(--did-syn-op); }
 .did-tok[data-g='punct'] { color: var(--did-syn-punct); }
-/* Secondary groups reuse a related hue instead of adding more colors. */
+/* 次级分组复用相近色相，不再增加颜色数量。 */
 .did-tok[data-g='fn'],
 .did-tok[data-g='tag'],
 .did-tok[data-g='head'] { color: var(--did-syn-kw); }
 .did-tok[data-g='attr'],
 .did-tok[data-g='link'] { color: var(--did-syn-str); }
 .did-tok[data-g='lit'] { color: var(--did-syn-num); }
-/* Ordinary identifiers and emphasis keep the default code foreground. */
+/* 普通标识符与强调文字保持代码默认前景色。 */
 .did-tok[data-g='var'],
 .did-tok[data-g='emph'] { color: inherit; }
 `.trim();
@@ -23525,7 +23968,7 @@ var EMPHASIS_RULES = `
 [data-syn-emphasis='on'] .did-tok[data-g='head'] { font-weight: 600; }
 [data-syn-emphasis='on'] .did-tok[data-g='com'] { font-style: italic; }
 [data-syn-emphasis='on'] .did-tok[data-g='link'] { text-decoration: underline; }
-/* "Color only": make sure no emphasis style leaks in from elsewhere. */
+/* “仅颜色”：确保没有任何字体样式从别处泄漏进来。 */
 [data-syn-emphasis='off'] .did-tok {
   font-weight: inherit;
   font-style: inherit;
@@ -23556,17 +23999,16 @@ var BADGE_RULES = `
 }
 .did-lang[data-unknown='true'] { border-style: dashed; }
 .did-lang[data-plain='true'] { opacity: 0.9; }
-/* Card header: allow the badge to shrink instead of pushing the header
-   actions out on a narrow window; the parent clamps it with overflow hidden.
-   The 12em ceiling comfortably fits localized "未知语言"/"Unknown" and even the
-   longest full language label. */
+/* 卡片头：允许徽章收缩而不是把头部动作按钮挤出窄窗口；父级用 overflow
+   hidden 截断。12em 上限足以容纳本地化的“未知语言”/“Unknown”以及最长的
+   语言全名。 */
 .did-head > .did-lang {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 12em;
   overflow: hidden;
 }
-/* Dialog subtitle: the badge sits inline before the existing text. */
+/* 弹窗副标题：徽章内联在既有文字之前。 */
 .did-dialog-sub > .did-lang {
   flex: 0 1 auto;
   min-width: 0;
@@ -23577,22 +24019,19 @@ var BADGE_RULES = `
 }
 `.trim();
 var SYNTAX_CSS = `
-/* ---- syntax highlighting: foreground colors only -----------------------
-   Add/remove row washes, gutter signs, and changed-segment backgrounds stay
-   red/green in styles.js; these rules only touch token text color.
-   Palette variables live on body for the same reason the surface variables do
-   (the host theme declares its tokens on body, so a :root declaration would
-   never see them; see styles.js). */
+/* ---- 语法高亮：只使用前景色 ---------------------------------------------
+   新增/删除行背景、行号符号与行内改动底色仍由 styles.js 以红/绿表达；
+   这里的规则只改 token 文字颜色。
+   调色板变量声明在 body 上，原因与 styles.js 相同：宿主主题把它的 token 声明
+   在 body，声明在 :root 的 var() 解析不到那些 token（详见 styles.js）。 */
 ${paletteBlock("body", SYNTAX_PALETTE.dark)}
-/* Official light appearance (host setting): light inner surface. */
+/* 官方浅色外观（宿主设置）：浅色内层。 */
 ${paletteBlock("body[data-dsh-inline-diff-appearance='light']", SYNTAX_PALETTE.light)}
-/* Per-card inner tone override. The "auto" value intentionally has no rule: it
-   follows the document appearance above. */
+/* 单卡片内部配色覆盖。'auto' 故意不写规则：跟随上面的文档级外观。 */
 ${paletteBlock("[data-inner-tone='light']", SYNTAX_PALETTE.light)}
 ${paletteBlock("[data-inner-tone='dark']", SYNTAX_PALETTE.dark)}
-/* Inner tone "same as shell": the code background is then the shell surface,
-   so the palette follows the shell tone. Shell tone "auto" likewise inherits
-   the document appearance, so it needs no extra rule either. */
+/* “内层配色 = 跟随外壳”：代码底色即外壳表面，因此调色板跟随外壳配色。
+   外壳配色 'auto' 同样继承文档外观，所以不需要额外规则。 */
 ${paletteBlock("[data-inner-tone='same'][data-shell-tone='light']", SYNTAX_PALETTE.light)}
 ${paletteBlock("[data-inner-tone='same'][data-shell-tone='dark']", SYNTAX_PALETTE.dark)}
 
@@ -23712,6 +24151,9 @@ function isReadRelevant(node) {
 function startReadRangeChips(t) {
   if (typeof document === "undefined" || typeof MutationObserver !== "function") return () => {
   };
+  const body = document.body;
+  if (body === null || body === void 0) return () => {
+  };
   let scheduled = false;
   let frame = null;
   const scan = () => {
@@ -23749,8 +24191,17 @@ function startReadRangeChips(t) {
       }
     }
   });
-  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-expanded"] });
+  try {
+    observer.observe(body, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-expanded"] });
+  } catch {
+    observer.disconnect();
+    return () => {
+    };
+  }
+  let stopped = false;
   return () => {
+    if (stopped) return;
+    stopped = true;
     observer.disconnect();
     if (frame !== null) {
       if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
@@ -23761,15 +24212,16 @@ function startReadRangeChips(t) {
 }
 
 // src/client/project.js
-var VERSION = "1.2.6";
+var VERSION = "1.3.0";
 var AUTHOR = "Him666233";
 var AUTHOR_URL = "https://github.com/Him666233";
 var REPO_URL = "https://github.com/Him666233/dsh-inline-diff";
 
 // src/client/settings-ui.jsx
-var import_react4 = require("react");
+var import_react5 = require("react");
 var import_react_dom2 = require("react-dom");
 var import_jsx_runtime4 = require("react/jsx-runtime");
+var ORIGINALITY_REPO_URL = "https://github.com/JanEickholt/dsh-inline-diff";
 var modalOpen = false;
 var modalListeners = /* @__PURE__ */ new Set();
 function openSettingsModal() {
@@ -23787,10 +24239,7 @@ function subscribeModal(listener) {
   return () => modalListeners.delete(listener);
 }
 function useModalOpen() {
-  return (0, import_react4.useSyncExternalStore)(subscribeModal, () => modalOpen, () => modalOpen);
-}
-function useSettings() {
-  return (0, import_react4.useSyncExternalStore)(subscribeSettings, getSettings, getSettings);
+  return (0, import_react5.useSyncExternalStore)(subscribeModal, () => modalOpen, () => modalOpen);
 }
 var languagesCache;
 function supportedLanguageList() {
@@ -23871,9 +24320,9 @@ function SettingsCloseButton({ onClose, t }) {
   return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", className: "did-settings-close", onClick: onClose, "aria-label": t("close"), title: t("close"), children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("svg", { viewBox: "0 0 16 16", width: "13", height: "13", fill: "none", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("path", { d: "m3.5 3.5 9 9m0-9-9 9", stroke: "currentColor", strokeWidth: "1.6", strokeLinecap: "round" }) }) });
 }
 function SupportedLanguages({ t, languages }) {
-  const [open, setOpen] = (0, import_react4.useState)(false);
-  const detailsRef = (0, import_react4.useRef)(null);
-  (0, import_react4.useEffect)(() => {
+  const [open, setOpen] = (0, import_react5.useState)(false);
+  const detailsRef = (0, import_react5.useRef)(null);
+  (0, import_react5.useEffect)(() => {
     const node = detailsRef.current;
     if (node === null) return void 0;
     const onToggle = () => setOpen(node.open);
@@ -23892,12 +24341,12 @@ function SupportedLanguages({ t, languages }) {
   ] });
 }
 function SettingsPanel({ t, onClose }) {
-  const settings = useSettings();
+  const settings = useSettingsSnapshot();
   const languageList = supportedLanguageList();
-  const [dsmMode, setDsmMode] = (0, import_react4.useState)(void 0);
-  const [busy, setBusy] = (0, import_react4.useState)(false);
-  const [error, setError] = (0, import_react4.useState)("");
-  (0, import_react4.useEffect)(() => {
+  const [dsmMode, setDsmMode] = (0, import_react5.useState)(void 0);
+  const [busy, setBusy] = (0, import_react5.useState)(false);
+  const [error, setError] = (0, import_react5.useState)("");
+  (0, import_react5.useEffect)(() => {
     setDsmMode(currentTranscriptMode());
   }, [settings.transcript]);
   const chooseTranscript = async (mode) => {
@@ -23936,6 +24385,23 @@ function SettingsPanel({ t, onClose }) {
       onClose === void 0 ? null : /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingsCloseButton, { onClose, t })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingRow, { label: t("settings.language"), description: t("settings.languageDesc"), children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        Segmented,
+        {
+          ariaLabel: t("settings.language"),
+          value: settings.language,
+          onChange: (value) => updateSettings({ language: value }),
+          options: [
+            { value: "zh", label: t("settings.languageZh") },
+            { value: "en", label: t("settings.languageEn") },
+            { value: "auto", label: t("settings.languageAuto") }
+          ]
+        }
+      ) }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-originality", role: "note", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-originality-title", children: t("originality.title") }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-originality-body", children: t("originality.body", { repo: ORIGINALITY_REPO_URL }) })
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
         SettingRow,
         {
@@ -24126,11 +24592,11 @@ function SettingsLauncher({ wide, t }) {
 }
 function SettingsModal({ t }) {
   const open = useModalOpen();
-  const [host, setHost] = (0, import_react4.useState)(null);
-  (0, import_react4.useEffect)(() => {
+  const [host, setHost] = (0, import_react5.useState)(null);
+  (0, import_react5.useEffect)(() => {
     setHost(document.body);
   }, []);
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     if (!open) return;
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
@@ -24142,7 +24608,7 @@ function SettingsModal({ t }) {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
   if (!open) return null;
-  const overlay = /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_react4.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-overlay", onPointerDown: closeSettingsModal, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("settings.title"), onPointerDown: (event) => event.stopPropagation(), children: [
+  const overlay = /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_react5.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-overlay", onPointerDown: closeSettingsModal, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("settings.title"), onPointerDown: (event) => event.stopPropagation(), children: [
     /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-banner", children: [
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-headtext", children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-title", children: t("settings.title") }),
@@ -24156,12 +24622,21 @@ function SettingsModal({ t }) {
 }
 
 // src/client/index.jsx
+installI18nRuntime({ createElement: import_react6.createElement, useSyncExternalStore: import_react6.useSyncExternalStore });
+var PluginInlineDiffCard = withPluginI18n(InlineDiffCard);
+var PluginEnhancedShellCard = withPluginI18n(EnhancedShellCard);
+var PluginEnhancedExpandedTool = withPluginI18n(EnhancedExpandedTool);
+var PluginDiffModal = withPluginI18n(DiffModal);
+var PluginSettingsModal = withPluginI18n(SettingsModal);
+var PluginSettingsSection = withPluginI18n(SettingsSection);
+var PluginSettingsLauncher = withPluginI18n(SettingsLauncher);
 var inject = ["slots", "locale", "configForms"];
 var INLINE_DIFF_KEYS = MUTATION_TOOLS;
-var ENHANCED_SHELL_KEYS = ["bash", "pwsh", "win_bash"];
+var ENHANCED_SHELL_KEYS = SHELL_KEYS;
 var VIEW_PRIORITY = -100;
 function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, dicts), "dsh-inline-diff: dictionaries");
+  ctx.effect(() => attachHostLocale(ctx.locale), "dsh-inline-diff: host locale");
   ctx.effect(() => {
     const style = document.createElement("style");
     style.dataset.dshPlugin = "inline-diff";
@@ -24176,9 +24651,8 @@ function apply(ctx) {
     document.head.appendChild(style);
     return () => style.remove();
   }, "dsh-inline-diff: syntax stylesheet");
-  const t = ctx.locale.bind(NS);
   console.info(`[dsh-inline-diff] client ${VERSION} · enhanced presentation`);
-  ctx.effect(() => startReadRangeChips(t), "dsh-inline-diff: read range chips");
+  ctx.effect(() => startReadRangeChips(pluginTranslate), "dsh-inline-diff: read range chips");
   initSettings(ctx.configForms);
   ctx.effect(() => {
     const stopAppearance = startAppearanceTracking();
@@ -24197,6 +24671,18 @@ function apply(ctx) {
       for (const dispose of disposers) dispose();
       disposers = [];
     };
+    const registerView = (key, Component) => {
+      try {
+        disposers.push(ctx.slots.register({
+          name: "tool.call.toolview",
+          key,
+          priority: VIEW_PRIORITY,
+          locale: NS
+        }, Component));
+      } catch (error) {
+        console.warn(`[dsh-inline-diff] cannot take over tool view "${key}"; the stock DSH row stays active`, error);
+      }
+    };
     const sync = () => {
       const settings = getSettings();
       const next = `${settings.fileCards}|${settings.shellRows}|${settings.toolCalls}`;
@@ -24204,33 +24690,14 @@ function apply(ctx) {
       signature = next;
       clear();
       if (settings.fileCards === "enhanced") {
-        for (const key of INLINE_DIFF_KEYS) {
-          disposers.push(ctx.slots.register({
-            name: "tool.call.toolview",
-            key,
-            priority: VIEW_PRIORITY,
-            locale: NS
-          }, InlineDiffCard));
-        }
+        for (const key of INLINE_DIFF_KEYS) registerView(key, PluginInlineDiffCard);
       }
       if (settings.shellRows === "enhanced") {
-        for (const key of ENHANCED_SHELL_KEYS) {
-          disposers.push(ctx.slots.register({
-            name: "tool.call.toolview",
-            key,
-            priority: VIEW_PRIORITY,
-            locale: NS
-          }, EnhancedShellCard));
-        }
+        for (const key of ENHANCED_SHELL_KEYS) registerView(key, PluginEnhancedShellCard);
       }
       if (settings.toolCalls === "enhanced") {
         for (const key of [...ENHANCED_DETAILS_KEYS, ...ENHANCED_GENERIC_KEYS, ...ENHANCED_SEARCH_WEB_KEYS]) {
-          disposers.push(ctx.slots.register({
-            name: "tool.call.toolview",
-            key,
-            priority: VIEW_PRIORITY,
-            locale: NS
-          }, EnhancedExpandedTool));
+          registerView(key, PluginEnhancedExpandedTool);
         }
       }
     };
@@ -24247,28 +24714,57 @@ function apply(ctx) {
       id: "inline-diff.modal",
       order: 60,
       locale: NS
-    }, DiffModal);
+    }, PluginDiffModal);
     yield ctx.slots.register({
       name: "shell.overlay",
       id: "inline-diff.settings",
       order: 61,
       locale: NS
-    }, SettingsModal);
+    }, PluginSettingsModal);
   });
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  const injectLocalizedEntry = (slotName, makeOptions, Component) => {
+    ctx.slots.inject(slotName, () => {
+      let dispose = null;
+      let language = null;
+      const sync = () => {
+        const next = getPluginLanguage();
+        if (dispose !== null && next === language) return;
+        const previous = dispose;
+        dispose = null;
+        language = next;
+        if (previous !== null) previous();
+        dispose = ctx.slots.register(makeOptions(), Component);
+      };
+      const unsubscribe = subscribePluginLanguage(sync);
+      try {
+        sync();
+      } catch (error) {
+        unsubscribe();
+        throw error;
+      }
+      return () => {
+        unsubscribe();
+        if (dispose !== null) {
+          dispose();
+          dispose = null;
+        }
+      };
+    });
+  };
+  injectLocalizedEntry("settings.section", () => ({
     name: "settings.section",
     id: "inline-diff",
     order: 40,
-    label: () => t("settings.nav"),
+    label: () => pluginTranslate("settings.nav"),
     locale: NS
-  }, SettingsSection));
-  ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
+  }), PluginSettingsSection);
+  injectLocalizedEntry("sidebar.footer.action", () => ({
     name: "sidebar.footer.action",
     id: "inline-diff.settings",
     order: 40,
-    label: () => t("settings.short"),
+    label: () => pluginTranslate("settings.short"),
     locale: NS
-  }, SettingsLauncher));
+  }), PluginSettingsLauncher);
 }
 		return module.exports;
 	}

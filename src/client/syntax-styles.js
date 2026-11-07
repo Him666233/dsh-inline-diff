@@ -1,18 +1,24 @@
 /**
- * Syntax-highlighting stylesheet for the inline diff surfaces.
+ * 语法高亮的样式表（与 styles.js 分开注入的第二份插件样式）。
  *
- * The palette is foreground-only and confined to the blue→violet arc
- * (hues 180°–285°): the plugin already uses red/green for removed/added lines,
- * so highlighting must never be able to look like an add/remove marker. Every
- * token color goes through a `--did-syn-*` custom property, which lets the same
- * markup re-color itself for a dark inner surface, a light inner surface, and
- * the "inner tone = same as shell" combination without touching the row
- * backgrounds, gutters, or changed-segment washes owned by styles.js.
+ * 配色约束（README「语法高亮」）：高亮只使用**前景色**，且色相被限制在蓝→紫
+ * 区间（180°–285°）。插件已用红/绿表示删除/新增行，高亮颜色绝不能看起来像
+ * 增删标记——这是安全/可读性的硬约束，由 tests/syntax-palette.test.mjs 断言。
  *
- * `SYNTAX_PALETTE` is exported as data for the palette safety test
- * (`tests/syntax-palette.test.mjs`): keys are fixed to the token groups the
- * renderer actually colors.
+ * 实现方式：每个 token 组的颜色都走 `--did-syn-*` 自定义属性，同一份 DOM 可以
+ * 在内层深色、内层浅色、以及“内层配色=跟随外壳”三种组合下重新取色，而完全
+ * 不触碰行背景、行号槽（gutter）或行内改动洗色——那些由 styles.js 拥有。
+ *
+ * 导出的 `SYNTAX_PALETTE` 是给配色安全测试用的数据（键固定为渲染层实际使用的
+ * token 分组）；`SYNTAX_CSS` 是完整样式表，由 index.jsx 以插件自有 `<style>`
+ * 注入。
+ *
+ * 依赖：无（纯字符串/数据模块）。
+ * 失败与回退：样式表本身不会失败；当高亮句柄为 null（未知语言/预算超限）时，
+ * 渲染层根本不产出 `.did-tok` 节点，代码使用默认前景色（仍随浅色/深色外观可读）。
  */
+
+/** 高亮调色板：仅前景色，深色/浅色两套。键 = token 分组，值 = 颜色。 */
 export const SYNTAX_PALETTE = {
   dark: {
     kw: '#c5a8ff',
@@ -38,23 +44,25 @@ export const SYNTAX_PALETTE = {
   },
 }
 
-/** Groups that get their own custom property (the exported palette keys). */
+/** 拥有独立自定义属性的分组（即导出调色板的键；其余分组复用这些色）。 */
 const VARIABLE_GROUPS = ['kw', 'str', 'num', 'type', 'prop', 'com', 'meta', 'op', 'punct']
 
-/** One custom-property declaration block for a palette. */
+/** 生成一套调色板的自定义属性声明块（每行一个 `--did-syn-*`）。 */
 function paletteVars(palette) {
   return VARIABLE_GROUPS.map(group => `  --did-syn-${group}: ${palette[group]};`).join('\n')
 }
 
-/** Selector block that re-points the palette custom properties. */
+/** 生成“选择器 { 调色板变量 }”块，用于按外观/内层配色重定向调色板。 */
 function paletteBlock(selector, palette) {
   return `${selector} {\n${paletteVars(palette)}\n}`
 }
 
 /**
- * Token coloring. Groups that have no dedicated hue fall back to a related
- * palette color; `var`/`emph` deliberately keep the surrounding foreground so
- * plain identifiers never pick up a semantic hue.
+ * token 着色规则。
+ *
+ * 没有专属色相的分组复用相近颜色（fn/tag/head → kw，attr/link → str，
+ * lit → num）；`var` 与 `emph` 有意保持周围前景色，让普通标识符不会被染上
+ * 语义色（避免“看起来像关键词”的误导）。
  */
 const TOKEN_RULES = `
 .did-tok[data-g='kw'] { color: var(--did-syn-kw); }
@@ -66,19 +74,22 @@ const TOKEN_RULES = `
 .did-tok[data-g='meta'] { color: var(--did-syn-meta); }
 .did-tok[data-g='op'] { color: var(--did-syn-op); }
 .did-tok[data-g='punct'] { color: var(--did-syn-punct); }
-/* Secondary groups reuse a related hue instead of adding more colors. */
+/* 次级分组复用相近色相，不再增加颜色数量。 */
 .did-tok[data-g='fn'],
 .did-tok[data-g='tag'],
 .did-tok[data-g='head'] { color: var(--did-syn-kw); }
 .did-tok[data-g='attr'],
 .did-tok[data-g='link'] { color: var(--did-syn-str); }
 .did-tok[data-g='lit'] { color: var(--did-syn-num); }
-/* Ordinary identifiers and emphasis keep the default code foreground. */
+/* 普通标识符与强调文字保持代码默认前景色。 */
 .did-tok[data-g='var'],
 .did-tok[data-g='emph'] { color: inherit; }
 `.trim()
 
-/** Optional font emphasis, only active while the setting says `on`. */
+/**
+ * 可选的字体强调：只在设置项 `syntaxEmphasis` 为 'on' 时生效。
+ * 'off' 时显式把字体样式重置为继承，防止第三方主题的加粗/斜体泄漏进来。
+ */
 const EMPHASIS_RULES = `
 [data-syn-emphasis='on'] .did-tok[data-g='kw'],
 [data-syn-emphasis='on'] .did-tok[data-g='fn'],
@@ -87,7 +98,7 @@ const EMPHASIS_RULES = `
 [data-syn-emphasis='on'] .did-tok[data-g='head'] { font-weight: 600; }
 [data-syn-emphasis='on'] .did-tok[data-g='com'] { font-style: italic; }
 [data-syn-emphasis='on'] .did-tok[data-g='link'] { text-decoration: underline; }
-/* "Color only": make sure no emphasis style leaks in from elsewhere. */
+/* “仅颜色”：确保没有任何字体样式从别处泄漏进来。 */
 [data-syn-emphasis='off'] .did-tok {
   font-weight: inherit;
   font-style: inherit;
@@ -96,9 +107,8 @@ const EMPHASIS_RULES = `
 `.trim()
 
 /**
- * Language badge. Small and quiet: a hairline capsule in the neutral
- * foreground/border tokens; unknown languages are distinguished by a dashed
- * border instead of any red/green color.
+ * 语言徽章样式：小而安静的发丝级胶囊，颜色用中性前景/边框 token；
+ * 未知语言用虚线边框区分，而不是红/绿（红绿仍是增删语义专属）。
  */
 const BADGE_RULES = `
 .did-lang {
@@ -124,17 +134,16 @@ const BADGE_RULES = `
 }
 .did-lang[data-unknown='true'] { border-style: dashed; }
 .did-lang[data-plain='true'] { opacity: 0.9; }
-/* Card header: allow the badge to shrink instead of pushing the header
-   actions out on a narrow window; the parent clamps it with overflow hidden.
-   The 12em ceiling comfortably fits localized "未知语言"/"Unknown" and even the
-   longest full language label. */
+/* 卡片头：允许徽章收缩而不是把头部动作按钮挤出窄窗口；父级用 overflow
+   hidden 截断。12em 上限足以容纳本地化的“未知语言”/“Unknown”以及最长的
+   语言全名。 */
 .did-head > .did-lang {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 12em;
   overflow: hidden;
 }
-/* Dialog subtitle: the badge sits inline before the existing text. */
+/* 弹窗副标题：徽章内联在既有文字之前。 */
 .did-dialog-sub > .did-lang {
   flex: 0 1 auto;
   min-width: 0;
@@ -145,24 +154,21 @@ const BADGE_RULES = `
 }
 `.trim()
 
-/** Complete stylesheet injected by index.jsx as a plugin-owned `<style>`. */
+/** 完整样式表：由 index.jsx 作为插件自有 `<style>` 注入。 */
 export const SYNTAX_CSS = `
-/* ---- syntax highlighting: foreground colors only -----------------------
-   Add/remove row washes, gutter signs, and changed-segment backgrounds stay
-   red/green in styles.js; these rules only touch token text color.
-   Palette variables live on body for the same reason the surface variables do
-   (the host theme declares its tokens on body, so a :root declaration would
-   never see them; see styles.js). */
+/* ---- 语法高亮：只使用前景色 ---------------------------------------------
+   新增/删除行背景、行号符号与行内改动底色仍由 styles.js 以红/绿表达；
+   这里的规则只改 token 文字颜色。
+   调色板变量声明在 body 上，原因与 styles.js 相同：宿主主题把它的 token 声明
+   在 body，声明在 :root 的 var() 解析不到那些 token（详见 styles.js）。 */
 ${paletteBlock('body', SYNTAX_PALETTE.dark)}
-/* Official light appearance (host setting): light inner surface. */
+/* 官方浅色外观（宿主设置）：浅色内层。 */
 ${paletteBlock("body[data-dsh-inline-diff-appearance='light']", SYNTAX_PALETTE.light)}
-/* Per-card inner tone override. The "auto" value intentionally has no rule: it
-   follows the document appearance above. */
+/* 单卡片内部配色覆盖。'auto' 故意不写规则：跟随上面的文档级外观。 */
 ${paletteBlock("[data-inner-tone='light']", SYNTAX_PALETTE.light)}
 ${paletteBlock("[data-inner-tone='dark']", SYNTAX_PALETTE.dark)}
-/* Inner tone "same as shell": the code background is then the shell surface,
-   so the palette follows the shell tone. Shell tone "auto" likewise inherits
-   the document appearance, so it needs no extra rule either. */
+/* “内层配色 = 跟随外壳”：代码底色即外壳表面，因此调色板跟随外壳配色。
+   外壳配色 'auto' 同样继承文档外观，所以不需要额外规则。 */
 ${paletteBlock("[data-inner-tone='same'][data-shell-tone='light']", SYNTAX_PALETTE.light)}
 ${paletteBlock("[data-inner-tone='same'][data-shell-tone='dark']", SYNTAX_PALETTE.dark)}
 

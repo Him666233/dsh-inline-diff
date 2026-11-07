@@ -1,6 +1,30 @@
 /**
- * Inline diff card (session-scoped, replaces the stock edit/write tool rows)
- * and the full-screen side-by-side comparison modal (root-scoped overlay).
+ * 内联差异卡片（会话级，接管 DSH 原生 edit/write 行）与全屏左右对照弹窗
+ * （根级 overlay）。
+ *
+ * 职责：
+ *   - 卡片：从 block + Host 快照/文件文本推导模型（model.js），渲染卡片头
+ *     （工具名、操作徽标、路径、语言徽章、增删统计、状态、放大按钮）、降级提示、
+ *     有限行的内联 hunk 列表与页脚；
+ *   - 弹窗：订阅 store.js 的载荷，渲染“变更块 / 全文对照”两个页签、修改前/后
+ *     栏头、固定提示横幅、页脚（来源、行数、Esc 关闭）；
+ *   - 共享渲染件：行号槽、行内 token/segment 切分、move 标注、gap 带、徽章。
+ *
+ * 依赖：react / react-dom（portal）、./api.js（快照与文件读取缓存）、
+ * ./diff.js（行数/渲染预算与 gutterSides）、./enhanced-tools.jsx（轨迹按钮）、
+ * ./highlight.js（token）、./languages.js（语言识别/徽章）、./model.js（模型与
+ * 共享纯函数）、./store.js（弹窗开关）、./use-settings.js（设置订阅）。
+ *
+ * 输入输出：InlineDiffCard(props) / DiffModal(props) 是 slot 组件；props 由宿主
+ * 注入（block、cwd、home、sessionId、t 等），组件不修改宿主数据。
+ *
+ * 失败与回退（README「多级回退与容错」在渲染层的表现）：
+ *   - 快照/文件读取失败 → api 返回 null → 模型退回元数据差异块或空模型，卡片仍
+ *     渲染（显示“没有可展示的差异/行号待定”）；
+ *   - diff 模型 truncated → 优先显示“文件过大”提示，不渲染任何行对象；
+ *   - 高亮 token 不可用/校验失败 → 每行回退纯文本默认前景色；
+ *   - 单行超长 → 只渲染截断后的纯文本（title 说明总字符数），不拼 token；
+ *   - 全文对照不可用 → 页签 disabled + 悬停显示具体原因（历史回放/无快照/过大）。
  */
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
@@ -9,16 +33,12 @@ import { FULL_VIEW_ROW_CAP, INLINE_ROW_CAP, gutterSides } from './diff.js'
 import { InspectButton } from './enhanced-tools.jsx'
 import { getDiffHighlighter, tokensForRow } from './highlight.js'
 import { detectLanguage, languageInfo } from './languages.js'
-import { buildCardModel, deriveCall, operationKey } from './model.js'
+import { buildCardModel, deriveCall, operationKey, stateKeyOf } from './model.js'
+import { pulsePhase } from './motion.js'
 import { closeDiffModal, getDiffModal, openDiffModal, subscribeDiffModal } from './store.js'
-import { getSettings, subscribeSettings } from './settings.js'
+import { useSettingsSnapshot } from './use-settings.js'
 
-/** Per-card-type shell/inner tone settings (file / command / tool). */
-function useCardSettings() {
-  return useSyncExternalStore(subscribeSettings, getSettings, getSettings)
-}
-
-/** Inline SVG icon set (no external primitive imports). */
+/** 内联 SVG 图标集（不引入外部图元依赖；currentColor 跟随文字颜色）。 */
 function Icon({ kind, size = 14 }) {
   const common = {
     viewBox: '0 0 16 16',
@@ -65,13 +85,13 @@ function Icon({ kind, size = 14 }) {
   )
 }
 
-/** Prettify one 1-based line range. */
+/** 格式化一个 1 起算的行区间：Lx 或 Lx–Ly；无行号返回空串。 */
 function range(start, end) {
   if (start === null || start === undefined) return ''
   return start === end ? `L${start}` : `L${start}–L${end}`
 }
 
-/** Localized description of one hunk's old/new span. */
+/** 一个 hunk 的旧/新行号范围的本地化描述（hunk 头）。 */
 function hunkRangeText(hunk, t) {
   if (hunk.hasNumbers !== true) return t('unknownRange')
   if (hunk.oldCount === 0) return t('hunkHeaderNew', { new: range(hunk.newStart, hunk.newEnd) })
@@ -82,16 +102,7 @@ function hunkRangeText(hunk, t) {
   })
 }
 
-/** Turn one running-head line into a key, tolerant of locale switches. */
-function stateKeyOf(status) {
-  if (status === 'preparing') return 'state.preparing'
-  if (status === 'running') return 'state.running'
-  if (status === 'error') return 'state.error'
-  if (status === 'stopped') return 'state.stopped'
-  return null
-}
-
-/** Localized source caption for the card footer / modal footer. */
+/** 卡片/弹窗页脚的“数据来源”说明（按插件语言渲染）。 */
 function sourceLabel(source, t) {
   if (source === 'snapshot') return t('snapshotSource')
   if (source === 'located') return t('locatedSource')
@@ -100,14 +111,23 @@ function sourceLabel(source, t) {
   return t('lineUnknown')
 }
 
-/** Hunk plan for the collapsed inline body: bounded rows, headers always kept. */
+/**
+ * 折叠卡片的渲染计划：在 INLINE_ROW_CAP 行预算内按 hunk 顺序取行。
+ *
+ * 先统计全部 hunk 的总行数（total），再按预算逐块放入；预算耗尽后不再加入新
+ * hunk，但 total 已完整，因此页脚“另有 N 行未展开”的数字是准确的（若在循环里
+ * 边加边统计，后面的行会被漏算，提示会偏小）。
+ *
+ * @param {object} diff - 差异模型。
+ * @returns {{parts: Array<object>, shown:number, total:number}}
+ *   parts 元素为 { type:'gap', gap, key } 或 { type:'hunk', hunk, rows, key }。
+ */
 function buildInlinePlan(diff) {
   const parts = []
   let budget = INLINE_ROW_CAP
   let shown = 0
-  // Count every hunk's rows up front: once the row budget is exhausted the loop
-  // stops adding hunks, so accumulating the total inside it would undercount the
-  // rows the card did not render and the "N more rows" footer would read too low.
+  // 先一次性统计全部 hunk 的总行数：循环一旦耗尽预算就会停止加入新 hunk，
+  // 若在循环里边加边统计，未渲染的行会被漏算，页脚“另有 N 行”会偏小。
   let total = 0
   for (const hunk of diff.hunks) total += hunk.rows.length
   for (const hunk of diff.hunks) {
@@ -127,24 +147,24 @@ function buildInlinePlan(diff) {
   return { parts, shown, total }
 }
 
-/** Compose the badge class name (callers may add a contextual class). */
+/** 拼出语言徽章的 class（调用方可以附加一个上下文 class）。 */
 function badgeClassName(className) {
   return className === undefined || className === null || className === '' ? 'did-lang' : `did-lang ${className}`
 }
 
 /**
- * Small, quiet capsule naming the detected language. Purely informational:
- * unknown languages are marked with a dashed border, never with red or green,
- * which stay reserved for removed/added lines.
+ * 小而安静的语言徽章。纯信息展示：
+ *   - 未知语言用虚线边框标记，绝不用红/绿（红绿是删除/新增专属）；
+ *   - 'hidden' 隐藏全部语言徽章（纯文本与未知语言标记也一并隐藏）；
+ *   - 未知语言是否显示由 unknownLanguage 设置单独控制。
  */
 function LanguageBadge({ languageId, settings, t, className }) {
   const base = badgeClassName(className)
-  // "Hidden" hides every language badge, including the plain-text marker and
-  // the dashed unknown-language badge; those two only honor "unknown language"
-  // while badges are shown at all.
+  // "隐藏"会隐藏所有语言徽章，包括纯文本标记与虚线“未知语言”徽章；后两者只在
+  // 徽章整体可见时才受 unknownLanguage 设置控制。
   if (settings.languageBadge === 'hidden') return null
   if (languageId === null || languageId === undefined) {
-    // `unknownLanguage` defaults to 'show'; only the explicit opt-out hides it.
+    // unknownLanguage 默认 'show'；只有显式选择隐藏时才不显示。
     if (settings.unknownLanguage === 'hidden') return null
     const label = t('langUnknown')
     const title = t('langTitle', { name: label })
@@ -175,9 +195,9 @@ function LanguageBadge({ languageId, settings, t, className }) {
 }
 
 /**
- * Tokens are only usable when they rebuild the row text exactly; anything else
- * (a stale/absent cache, a mismatched normalization) is ignored so the plain
- * text path is always the safe fallback.
+ * 校验 token 数组是否可直接渲染：必须非空、每项是 {text:string}，且拼接后
+ * 逐字等于行文本。任一不满足返回 null——旧缓存/归一化不一致时宁可走纯文本
+ * 路径，也绝不渲染与模型不一致的代码。
  */
 function usableTokens(row, tokens) {
   if (!Array.isArray(tokens) || tokens.length === 0) return null
@@ -190,15 +210,19 @@ function usableTokens(row, tokens) {
   return rebuilt === row.text ? tokens : null
 }
 
-/** One syntax-colored token span. */
+/** 一个带语法颜色的 token span。 */
 function TokenSpan({ token }) {
   return <span className="did-tok" data-g={token.g}>{token.text}</span>
 }
 
 /**
- * Slice tokens along the row's segment boundaries. A token may straddle a
- * boundary, so it is split into pieces that never leave their segment: changed
- * segments keep their own `.did-seg` wash, unchanged ones stay plain tokens.
+ * 按行内改动片段（segments）的边界切分 token。
+ *
+ * 一个 token 可能横跨 segment 边界（例如 `foo_bar` 的 token 里只有 `bar` 被改），
+ * 因此按字符长度把 token 切成“绝不跨出所属 segment”的小片：改动 segment 里的
+ * 片段包 `.did-seg` 洗色，未改动片段保持普通 token。
+ *
+ * 返回 null 表示两侧长度对不上（模型异常）：调用方回退纯文本/segment 渲染。
  */
 function splitTokensBySegments(tokens, segments) {
   let expected = 0
@@ -232,7 +256,14 @@ function splitTokensBySegments(tokens, segments) {
   return groups
 }
 
-/** Render a line's text, splitting unchanged pieces from the changed spans. */
+/**
+ * 渲染一行文本，按优先级选择渲染路径：
+ *   1. 有合法 token 且无行内片段 → 纯 token；
+ *   2. 有合法 token 且有行内片段 → 按片段切分 token（语法色 + 改动洗色叠加）；
+ *   3. token 不可用但有片段 → 纯文本片段（改动段加 `.did-seg`）；
+ *   4. 都没有 → fallback（纯文本，默认前景色）。
+ * 任何一步校验失败都落到更简单的路径，绝不渲染错误文本。
+ */
 function RowText({ row, fallback, tokens }) {
   const segments = row === null || row === undefined ? null : row.segments
   const colorable = usableTokens(row, tokens)
@@ -266,7 +297,7 @@ function RowText({ row, fallback, tokens }) {
   ))
 }
 
-/** Localized move chip text; multi-line moves include the full target range. */
+/** move 标注的本地化文案；多行移动带完整目标范围（移自/移至 Lx–Ly）。 */
 function moveText(move, t) {
   const end = move.endLine
   if (typeof end === 'number' && end > move.line) {
@@ -277,11 +308,39 @@ function moveText(move, t) {
   return move.kind === 'to' ? t('movedTo', { line: move.line }) : t('movedFrom', { line: move.line })
 }
 
-/** One unified inline row: old gutter, new gutter, sign, code, move chip. */
+/**
+ * 单行代码的展示截断上限（字符数）。
+ *
+ * 安全背景（MEDIUM-5）：单行超长文本（典型是 minified 文件的一行几十万字符）
+ * 会作为一个巨大文本节点交给浏览器排版；即使 diff 引擎已把 > 1,000,000 字符的
+ * 单行整体降级，20,000~1,000,000 字符的行在低配设备上仍能造成明显卡顿。这里
+ * 只做**纯展示截断**：diff 数据、行号、复制内容与增删统计都不受影响。
+ */
+const DISPLAY_LINE_CHARS = 20000
+
+/**
+ * 对一行代码做展示截断。
+ *
+ * 输入：任意行文本（可能 null / undefined / 非字符串，按空行处理）。
+ * 输出：`{ text, truncated, total }`
+ *   - text：≤ 上限时原样返回；超限时返回前 `DISPLAY_LINE_CHARS` 个字符 + '…'；
+ *   - truncated：是否发生截断（true 时调用方跳过 token/segment 渲染，直接渲染 text）；
+ *   - total：原始字符数（用于 title 提示“共 N 个字符”，不泄漏被截掉的内容）。
+ */
+function clampLineForDisplay(text) {
+  if (typeof text !== 'string') return { text: '', truncated: false, total: 0 }
+  if (text.length <= DISPLAY_LINE_CHARS) return { text, truncated: false, total: text.length }
+  return { text: text.slice(0, DISPLAY_LINE_CHARS) + '…', truncated: true, total: text.length }
+}
+
+/** 一条统一格式的内联行：旧行号槽、新行号槽、符号、代码、move 标注。 */
 function InlineRow({ row, t, highlighter, hunk }) {
-  const code = row.text === '' ? '\u00a0' : row.text
+  // 超长单行只渲染截断后的纯文本：token / segment 都基于完整行文本，截断后
+  // 不能再拼接它们（否则会绕过展示上限），所以一个行内只有两种渲染路径。
+  const clipped = clampLineForDisplay(row.text)
+  const code = clipped.text === '' ? '\u00a0' : clipped.text
   const move = row.move
-  const tokens = highlighter === null || highlighter === undefined
+  const tokens = clipped.truncated || highlighter === null || highlighter === undefined
     ? null
     : tokensForRow(highlighter, hunk ?? null, row, row.kind === 'del' ? 'old' : 'new')
   return (
@@ -289,7 +348,12 @@ function InlineRow({ row, t, highlighter, hunk }) {
       <span className="did-num" data-side="old">{row.oldNo ?? ''}</span>
       <span className="did-num" data-side="new">{row.newNo ?? ''}</span>
       <span className="did-sign">{row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '}</span>
-      <code className="did-code"><RowText row={row} fallback={code} tokens={tokens} /></code>
+      <code
+        className="did-code"
+        title={clipped.truncated ? t('lineTruncated', { n: clipped.total }) : undefined}
+      >
+        {clipped.truncated ? code : <RowText row={row} fallback={code} tokens={tokens} />}
+      </code>
       {move !== undefined && move !== null ? (
         <span className="did-move">
           {moveText(move, t)}
@@ -299,7 +363,7 @@ function InlineRow({ row, t, highlighter, hunk }) {
   )
 }
 
-/** The "horizontal beam" between two change regions inside one file. */
+/** 一个文件内两处改动区之间的“横梁”：分隔带 + 未修改行数 + 行号位移。 */
 function GapBand({ gap, t }) {
   if (gap === null || gap === undefined) return null
   const shift = gap.shift
@@ -322,24 +386,23 @@ function GapBand({ gap, t }) {
 }
 
 /**
- * Only trusted user gestures may toggle the card. Some theme plugins replay a
- * synthetic `.click()` on the nearest `[aria-expanded]` row from an animation
- * finish callback (the claude-style theme does this); without this guard such a
- * replayed click lands on our card header and collapses the card right after a
- * real click on "放大", which reads as the expand button fighting the collapse
- * toggle. Programmatic clicks (`isTrusted === false`) are ignored for toggling.
+ * 只有“可信的用户手势”才能切换卡片折叠。
+ *
+ * 背景：部分主题插件会在动画结束回调里对最近的 `[aria-expanded]` 行重放一次
+ * 合成 `.click()`（claude 风格主题如此）；若不加限制，重放的点击会落在卡片头
+ * 上，导致用户刚点“放大”卡片就立刻折叠。程序化点击（`isTrusted === false`）
+ * 一律忽略折叠切换（放大按钮自己的 onKeyDown 仍会 stopPropagation）。
  */
 function isTrustedGesture(event) {
   const native = event === null || event === undefined ? null : (event.nativeEvent ?? event)
   return native === null || native.isTrusted !== false
 }
 
-/** One inline hunk block with its own "beam" header. */
+/** 一个内联 hunk 块：自己的“横梁”头 + 行号图例 + 行列表 + 未展开提示。 */
 function InlineHunk({ hunk, rows, t, pathLabel, highlighter }) {
   const hidden = hunk.rows.length - rows.length
-  // Pure creations have no old-file numbers and pure deletions no new-file
-  // numbers; the gutter legend must not claim a column that the rows never
-  // fill. Hunks with context rows still have both numbers, so both labels stay.
+  // 纯新建没有旧文件行号、纯删除没有新文件行号；行号图例不能给这一 hunk
+  // 从未填充的列加标签。含上下文行的 hunk 两侧都有行号，因此两个标签都保留。
   const sides = gutterSides(hunk)
   const hasOldNumbers = sides.old
   const hasNewNumbers = sides.new
@@ -356,10 +419,9 @@ function InlineHunk({ hunk, rows, t, pathLabel, highlighter }) {
         </span>
       </div>
       {hunk.hasNumbers === false ? null : (
-        // Column legend for the two line-number gutters: makes it obvious which
-        // number is the old-file line and which is the new-file line, on every
-        // hunk rather than only in the hunk header above. A side that this hunk
-        // never numbers keeps its column but drops the label.
+        // 两列行号的显式图例：让用户在每个 hunk 上都能分清哪个数字是旧文件行、
+        // 哪个是新文件行，而不是只靠上方的 hunk 头猜。本 hunk 从未编号的一侧
+        // 保留列宽但去掉标签。
         <div className="did-numhead" aria-hidden="true" data-sides={legendSides}>
           <span className="did-numhead-label" data-side="old">{hasOldNumbers ? t('gutterOld') : ''}</span>
           <span className="did-numhead-label" data-side="new">{hasNewNumbers ? t('gutterNew') : ''}</span>
@@ -375,7 +437,17 @@ function InlineHunk({ hunk, rows, t, pathLabel, highlighter }) {
   )
 }
 
-/** Pair the ordered row stream into left/right cells for side-by-side view. */
+/**
+ * 把有序行流配成左右对照的单元格对（cap 为总行数上限）。
+ *
+ * ctx 行两侧共用同一行对象；连续的非 ctx 行按“第 k 行删除配第 k 行新增”配对，
+ * 某一侧多出来的行在对侧显示空白格（kind='none'）。返回 truncated 表示因 cap
+ * 截断，弹窗据此在底部显示“共 N 行；超出上限已截断”。
+ *
+ * @param {Array<object>} rows
+ * @param {number} cap
+ * @returns {{pairs: Array<{left:object|null, right:object|null}>, truncated:boolean}}
+ */
 function pairRows(rows, cap) {
   const pairs = []
   let i = 0
@@ -390,9 +462,8 @@ function pairRows(rows, cap) {
     }
     const deleted = []
     const added = []
-    // A changed block may interleave added and removed rows; collect both
-    // kinds in order so the two panes always pair the k-th removal with the
-    // k-th addition.
+    // 变更块里删除行与新增行可能交错出现；按顺序分别收集两类，保证左右两栏
+    // 永远“第 k 个删除配第 k 个新增”。
     while (i < rows.length && rows[i].kind !== 'ctx') {
       if (rows[i].kind === 'del') deleted.push(rows[i])
       else added.push(rows[i])
@@ -405,19 +476,26 @@ function pairRows(rows, cap) {
   return { pairs, truncated: i < rows.length }
 }
 
-/** One side of a side-by-side pair. */
+/** 左右对照的单个单元格（空行显示 '\u00a0' 以保持行高）。 */
 function SideCell({ row, side, t, highlighter, hunk }) {
   const kind = row === null ? 'none' : row.kind
   const lineNo = row === null ? null : side === 'left' ? row.oldNo : row.newNo
-  const code = row === null ? '' : row.text === '' ? '\u00a0' : row.text
+  // 与 InlineRow 同一套单行展示截断：左右对照里也限制单个文本节点大小。
+  const clipped = clampLineForDisplay(row === null ? '' : row.text)
+  const code = clipped.text === '' ? '\u00a0' : clipped.text
   const move = row === null ? null : row.move
-  const tokens = row === null || highlighter === null || highlighter === undefined
+  const tokens = row === null || clipped.truncated || highlighter === null || highlighter === undefined
     ? null
     : tokensForRow(highlighter, hunk ?? null, row, side === 'left' ? 'old' : 'new')
   return (
     <div className="did-cell" data-kind={kind}>
       <span className="did-num">{lineNo ?? ''}</span>
-      <code className="did-code"><RowText row={row} fallback={code || '\u00a0'} tokens={tokens} /></code>
+      <code
+        className="did-code"
+        title={clipped.truncated ? t('lineTruncated', { n: clipped.total }) : undefined}
+      >
+        {clipped.truncated ? code : <RowText row={row} fallback={code} tokens={tokens} />}
+      </code>
       {move !== null && move !== undefined ? (
         <span className="did-move">
           {moveText(move, t)}
@@ -427,7 +505,7 @@ function SideCell({ row, side, t, highlighter, hunk }) {
   )
 }
 
-/** One aligned side-by-side row. */
+/** 一组对齐后的左右对照行。 */
 function PairRow({ pair, t, highlighter, hunk }) {
   return (
     <div className="did-pair">
@@ -437,7 +515,7 @@ function PairRow({ pair, t, highlighter, hunk }) {
   )
 }
 
-/** Header strip above the two columns. */
+/** 两列上方的栏头（修改前 / 修改后）。 */
 function PanesHead({ t }) {
   return (
     <div className="did-panes-head">
@@ -447,7 +525,12 @@ function PanesHead({ t }) {
   )
 }
 
-/** Full-screen comparison body: changed hunks or the whole file. */
+/**
+ * 弹窗主体：按页签渲染“变更块”或“全文对照”。
+ *
+ * 全文模式用 FULL_VIEW_ROW_CAP 限制总行数（防止超大文件一次渲染过多行）；
+ * 变更块模式逐 hunk 渲染（不分页，但 hunk 数量受真实修改数限制）。
+ */
 function SideBySide({ diff, mode, pathLabel, t, highlighter }) {
   if (mode === 'full') {
     const { pairs, truncated } = pairRows(diff.rows, FULL_VIEW_ROW_CAP)
@@ -490,8 +573,19 @@ function SideBySide({ diff, mode, pathLabel, t, highlighter }) {
   )
 }
 
-/** Localized fallback notice for a degraded (large-file) model. */
-function noticeText(notice, t) {
+/**
+ * 降级（大文件/历史回放）模型的本地化原因说明。
+ *
+ * @param {object|null} notice - 模型给出的提示（kind/old/new…）。
+ * @param {Function} t - 插件语言翻译函数。
+ * @param {boolean} [truncated] - diff 是否因“物化预算”被截断。截断模型没有
+ *   rows/hunks，沿用 noticeHuge 的“已切换为差异块模式”会误导（其实没有任何差异
+ *   块可看），因此截断时优先使用专门的 noticeTruncated 文案。
+ * @returns {string} 要显示给用户的说明；无提示时返回空串。
+ */
+function noticeText(notice, t, truncated) {
+  if (truncated === true) return t('noticeTruncated')
+  if (notice === null || notice === undefined) return ''
   if (notice.kind === 'huge') return t('noticeHuge', { old: notice.old, new: notice.new })
   if (notice.kind === 'coarse') return t('noticeCoarse')
   if (notice.kind === 'tool') return t('noticeTool')
@@ -501,7 +595,7 @@ function noticeText(notice, t) {
   return t('noticeLinesPending')
 }
 
-/** Build the modal payload from a card model. */
+/** 从卡片模型投影出弹窗载荷（只取展示所需字段，不把整个模型放进 store）。 */
 function modalPayloadOf(model) {
   return {
     callId: model.callId,
@@ -517,10 +611,19 @@ function modalPayloadOf(model) {
   }
 }
 
-/** Session-scoped inline diff row, registered for edit/write. */
+/**
+ * 会话级内联差异行，注册给 edit / write / str_replace_editor。
+ *
+ * 数据获取：组件挂载后（已落定且非错误）取一次 Host 快照；快照缺失时再按元数据
+ * 路径读一次当前文件（供历史回放定位行号）。`requested` ref 保证每张卡片只请求
+ * 一次；effect 清理时用 alive 标记丢弃卸载后的异步结果，避免 setState 警告。
+ *
+ * 派生：模型（model.js）→ 语言识别（路径优先、content 兜底 shebang）→ 高亮句柄
+ * → 折叠计划。所有派生都走 useMemo，避免重渲染重复计算。
+ */
 export function InlineDiffCard(props) {
   const { block, toolName, cwd, home, openFile, inspect, sessionId, t } = props
-  const tone = useCardSettings()
+  const tone = useSettingsSnapshot()
   const call = useMemo(() => deriveCall(block), [block])
   const [snapshot, setSnapshot] = useState(undefined)
   const [fileText, setFileText] = useState(null)
@@ -561,14 +664,14 @@ export function InlineDiffCard(props) {
   }), [block, toolName, cwd, home, snapshot, fileText, call.settled, call.isError])
 
   const diff = model.diff
-  // Language detection is path-first and can fall back to the content (shebang
-  // and special filenames); `detectLanguage` never throws on odd paths.
+  // 语言识别以路径优先，内容兜底（shebang 与特殊文件名）；detectLanguage 对
+  // 畸形路径也不抛错，因此卡片可以在任意状态下安全调用。
   const languageId = useMemo(
     () => detectLanguage(model.absolutePath ?? model.filePath, model.diff?.afterText ?? model.diff?.beforeText ?? ''),
     [model.absolutePath, model.filePath, model.diff],
   )
-  // A null highlighter means "no highlighting": rows then render exactly as
-  // before (plain text in the default foreground color).
+  // 高亮句柄为 null 表示“不高亮”：行按纯文本默认前景色渲染（与关闭语法高亮
+  // 时完全一致），颜色仍随浅色/深色外观可读。
   const highlighter = useMemo(
     () => (tone.syntaxHighlight !== false && languageId !== null && diff !== null && diff !== undefined
       ? getDiffHighlighter(diff, languageId)
@@ -580,6 +683,17 @@ export function InlineDiffCard(props) {
   const totalHunks = hasHunks ? diff.hunks.length : 0
   const plan = useMemo(() => (hasHunks ? buildInlinePlan(diff) : null), [diff, hasHunks])
   const hidden = plan === null ? 0 : plan.total - plan.shown
+  // 卡片顶部的降级提示。物化预算截断（diff.truncated）时优先显示“已截断”文案：
+  // 这种模型没有任何行对象/hunk，“已切换为差异块模式”会让用户以为下面有块可看。
+  // 历史回放/无执行快照类提示属于放大弹窗的信息，卡片上不重复展示。
+  const truncated = diff !== null && diff !== undefined && diff.truncated === true
+  const cardNotice = (() => {
+    if (truncated) return noticeText(null, t, true)
+    const notice = model.notice
+    if (notice === null || notice === undefined) return null
+    if (notice.kind === 'history' || notice.kind === 'locate' || notice.kind === 'tool' || notice.kind === 'toolLocate') return null
+    return noticeText(notice, t, false)
+  })()
 
   const openModal = (event) => {
     event?.stopPropagation?.()
@@ -589,7 +703,7 @@ export function InlineDiffCard(props) {
   }
   const toggle = () => setCollapsed(value => !value)
   const onHeadClick = (event) => {
-    // Ignore replayed/programmatic clicks from other plugins (see isTrustedGesture).
+    // 忽略其它插件重放/程序化的点击（见 isTrustedGesture）。
     if (isTrustedGesture(event)) toggle()
   }
   const onHeadKeyDown = (event) => {
@@ -609,19 +723,17 @@ export function InlineDiffCard(props) {
 
   return (
     <Fragment>
-      <div className="did-card" data-state={model.status} data-tool={model.toolName} data-call-id={model.callId} data-inline-diff="row" data-shell-tone={tone.fileShellTone} data-inner-tone={tone.fileInnerTone} data-language={languageId ?? 'unknown'} data-syn-emphasis={tone.syntaxEmphasis}>
+      <div className="did-card" data-state={model.status} data-tool={model.toolName} data-call-id={model.callId} data-inline-diff="row" data-shell-tone={tone.fileShellTone} data-inner-tone={tone.fileInnerTone} data-language={languageId ?? 'unknown'} data-syn-emphasis={tone.syntaxEmphasis} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
         <div
           className="did-head"
           role="button"
           tabIndex={0}
           aria-expanded={!collapsed}
-          // Compatibility with themes that hijack fold clicks: claude-style's
-          // document-level capture listener intercepts every real click inside
-          // an [aria-expanded] row, animates the fold and then replays the click
-          // on the row — which turns clicks on 放大 / 轨迹 / the file-path button
-          // into "collapse the card". Its own exclusion is [aria-haspopup]; an
-          // explicit aria-haspopup="false" (valid ARIA: no popup) opts the whole
-          // header out without changing what assistive tech or CSS sees.
+          // 兼容劫持折叠点击的主题：claude 风格主题会在 document 捕获阶段拦截
+          // [aria-expanded] 行内的每次真实点击，播放折叠动画后把点击重放到行上，
+          // 于是点“放大/轨迹/文件路径”反而会折叠卡片。它自己的排除条件是
+          // [aria-haspopup]；这里显式写 aria-haspopup="false"（合法 ARIA：无弹层）
+          // 让整个头部被排除，同时不改变辅助技术或 CSS 看到的内容。
           aria-haspopup="false"
           onClick={onHeadClick}
           onKeyDown={onHeadKeyDown}
@@ -678,11 +790,9 @@ export function InlineDiffCard(props) {
             <button
               type="button"
               className="did-zoom"
-              // Never use the native `disabled` attribute here: a disabled
-              // button does not receive the click, so it bubbles to the whole
-              // header (which toggles collapse) — the "expand seems to collapse
-              // the card first" bug. Keep it focusable/hoverable and let the
-              // handler ignore the click while the diff is not ready.
+              // 这里绝不能用原生 disabled：禁用按钮收不到点击，点击会冒泡到整个
+              // 头部（切换折叠）——这正是“点放大反而先折叠卡片”的 bug。保持可聚焦/
+              // 可悬停，由 handler 在 diff 未就绪时忽略点击。
               aria-disabled={hasHunks ? undefined : 'true'}
               data-disabled={hasHunks ? undefined : 'true'}
               onClick={openModal}
@@ -695,8 +805,8 @@ export function InlineDiffCard(props) {
             </button>
           </span>
         </div>
-        {model.notice !== null && model.notice !== undefined && model.notice.kind !== 'history' && model.notice.kind !== 'locate' && model.notice.kind !== 'tool' && model.notice.kind !== 'toolLocate' ? (
-          <div className="did-notice">{noticeText(model.notice, t)}</div>
+        {cardNotice !== null ? (
+          <div className="did-notice">{cardNotice}</div>
         ) : null}
         {!collapsed ? (
           hasHunks ? (
@@ -735,18 +845,25 @@ export function InlineDiffCard(props) {
 }
 
 /**
- * Root-scoped overlay: reads the module store and renders the comparison
- * dialog. Nothing restores focus or state behind the user's back; Escape and
- * the backdrop both close it.
+ * 根级浮层：订阅模块 store 并渲染左右对照弹窗。
+ *
+ * 行为约定：
+ *   - 用 body 级 portal 渲染，保证真正的模态层级；
+ *   - 打开时把焦点移到对话框（可键盘操作），Esc 与点击遮罩都关闭；
+ *   - 切换卡片（callId 变化）时自动回到“变更块”页签；
+ *   - 不偷偷恢复任何焦点/滚动状态（Esc 关闭即可，符合最小惊讶）；
+ *   - 全文对照不可用时页签置灰，并在 title 里给出具体原因（历史回放/无快照/
+ *     文件过大），而不是静默禁用。
  */
 export function DiffModal({ t }) {
   const payload = useSyncExternalStore(subscribeDiffModal, getDiffModal, getDiffModal)
-  const settings = useCardSettings()
+  const settings = useSettingsSnapshot()
   const [tab, setTab] = useState('hunks')
   const [portalHost, setPortalHost] = useState(null)
   const dialogRef = useRef(null)
   const callId = payload === null ? null : payload.callId
-  // The dialog follows the same detection/highlighting contract as the cards.
+  // 弹窗与卡片使用同一套语言识别/高亮契约（同一个 detectLanguage 与
+  // getDiffHighlighter，因此两处配色、语言徽章必然一致）。
   const languageId = useMemo(
     () => (payload === null
       ? null
@@ -761,10 +878,9 @@ export function DiffModal({ t }) {
   )
 
   useEffect(() => {
-    // A body-level portal is what makes the dialog genuinely modal in the Web
-    // UI: shell.overlay sits inside the frame's stacking context (z-index 20),
-    // below plugin-owned floating layers such as desktop pets, so a dialog
-    // rendered there stays visible but cannot receive pointer events reliably.
+    // 用 body 级 portal 才能让弹窗在 Web UI 里真正“模态”：shell.overlay 位于
+    // 框架自己的层叠上下文（z-index 20）内，低于桌面宠物等插件浮动层；渲染在
+    // 那里虽然可见，却无法可靠接收指针事件。
     setPortalHost(document.body)
   }, [])
 
@@ -871,7 +987,7 @@ export function DiffModal({ t }) {
                 not to the scrollable body, so the body scrollbar starts below
                 it and scrolling never hides it. */}
             {payload.notice !== null && payload.notice !== undefined ? (
-              <div className="did-notice did-dialog-notice">{noticeText(payload.notice, t)}</div>
+              <div className="did-notice did-dialog-notice">{noticeText(payload.notice, t, diff.truncated === true)}</div>
             ) : null}
             {/* The before/after strip belongs to the dialog header, not to the
                 scrollable body: keeping it here means the body's scrollbar

@@ -1,11 +1,16 @@
 # Inline Diff · 内联差异
 
-DeepSeek Harness 插件：为每次 `edit` / `write` / `str_replace_editor` 调用在对话中就地渲染内联差异卡片，自动识别文件语言（57 种）并做避开红绿的语法高亮，并提供左右对照、行内字符级高亮、移动块与被动行号说明、Read 行范围展示；命令、搜索、网页与通用工具调用还可切换为默认展开 IN/OUT 的「展开风格」，命令与工具卡片的输入/输出状态按段独立着色。
+中文（默认）| [English](README.en.md)
+
+> **原创声明（重要）**：本项目是**完全原创**的作品，与 [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff) **以及任何其他同名插件、仓库或项目没有任何关系**。本项目没有参考、复制或移植上述项目；两者的实现方式、模块划分、代码组织与最终渲染效果完全不同。部分功能相似（对话内联差异展示）纯属**雷同巧合**——本项目是在完成实现之后搜索同类插件时，才发现存在同名/相似项目。本项目**不是**任何其他项目的衍生作品、复刻作品或分支。
+
+DeepSeek Harness 插件：为每次 `edit` / `write` / `str_replace_editor` 调用在对话中就地渲染内联差异卡片，自动识别文件语言（57 种）并做避开红绿的语法高亮，并提供左右对照、行内字符级高亮、移动块与被动行号说明、Read 行范围展示；命令、搜索、网页与通用工具调用还可切换为默认展开 IN/OUT 的「展开风格」，命令与工具卡片的输入/输出状态按段独立着色。**1.3.0 起界面与文档提供完整中英双语，并可在设置页独立切换语言（默认中文）。**
 
 - **作者**：[Him666233](https://github.com/Him666233)
 - **仓库**：[Him666233/dsh-inline-diff](https://github.com/Him666233/dsh-inline-diff)
 - **License**：MIT
-- **当前版本**：1.2.6
+- **npm**：`@him666233/dsh-inline-diff`
+- **当前版本**：1.3.0
 
 > 设置项中的「展开风格 / Expanded」指展开式、平板式、类现代编码代理的透明输出效果；项目不包含任何第三方产品品牌字样。
 
@@ -21,7 +26,21 @@ DeepSeek Harness 插件：为每次 `edit` / `write` / `str_replace_editor` 调�
 
 ## 安装
 
-推荐通过 DSH 插件管理器，选择本目录（`plugin/`）作为本地插件安装；也可以手动 link：
+在 DSH 中从 npm 安装（推荐）：
+
+```bash
+dsh plugin add @him666233/dsh-inline-diff
+```
+
+也可以在 DSH Web UI 的「插件 → 添加插件」里直接输入包名安装。桌面端与 Web UI 若使用不同 profile，需要分别安装；插件加载后刷新或重启 DSH。npm 包名同时写在本包的 `cordis.patch.yml`（bundle 插件的模块名）与 `client.js`（浏览器模块 id）里，请勿只改其中一个。
+
+其他安装方式（旧方式继续可用）：
+
+- **本地目录 / 离线安装**：把本目录（`plugin/`）交给 DSH「插件 → 添加插件」（输入绝对路径），或解压 Release 中的 `dsh-inline-diff-<版本>-plugin.zip` 后选择解压出的 `plugin/` 目录；
+- **手动 link（开发调试）**：见下方；
+- **升级**：`dsh plugin add @him666233/dsh-inline-diff@<版本>`，或在插件页卸载后重装；**卸载**：`dsh plugin remove @him666233/dsh-inline-diff`（或插件页卸载）。同一个 profile 不要同时保留 link 版与 npm 版。
+
+本地开发或离线安装：把本目录（`plugin/`）作为本地插件安装，或手动 link：
 
 ```bash
 cd ~/.dsh/profiles/<profile>
@@ -33,17 +52,15 @@ pnpm add link:/absolute/path/to/dsh-inline-diff/plugin
 ```json
 {
   "dependencies": {
-    "@local/dsh-inline-diff": "link:/absolute/path/to/dsh-inline-diff/plugin"
+    "@him666233/dsh-inline-diff": "link:/absolute/path/to/dsh-inline-diff/plugin"
   },
   "dsh": {
     "profile": {
-      "bundles": ["@local/dsh-inline-diff"]
+      "bundles": ["@him666233/dsh-inline-diff"]
     }
   }
 }
 ```
-
-桌面端与 Web UI 若使用不同 profile，需要分别安装。插件加载后刷新或重启 DSH。
 
 ## 功能
 
@@ -67,6 +84,16 @@ pnpm add link:/absolute/path/to/dsh-inline-diff/plugin
 
 侧边栏底部「差异样式」或 DSH 设置页「内联差异」：
 
+**界面语言（1.3.0 新增）**：
+
+| 设置项 | 可选项 |
+| --- | --- |
+| 界面语言 / Language | 中文（默认） / English / 跟随 DSH |
+
+切换立即生效、无需刷新，不会改动 DSH 全局语言；文档语言：中文默认（本文件），英文见 [README.en.md](README.en.md)。设置页顶部同时展示一条醒目的原创声明：本项目为完全原创作品，与任何同名/相似插件（包括 [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff)）没有任何关系。
+
+四项展示风格：
+
 | 设置项 | 展开风格 / 不折叠 | DSH 原生 |
 | --- | --- | --- |
 | 文件修改卡片 | 本插件的内联差异卡片 | 官方文件修改行 |
@@ -89,7 +116,7 @@ pnpm add link:/absolute/path/to/dsh-inline-diff/plugin
 
 ## 数据与限制
 
-插件没有网络请求或遥测。Host 只保留显示所需的修改前后文本到内存 LRU（最多 240 条，每侧上限 4MB），不落盘；Host 只为 `edit` / `write` 保存快照，`str_replace_editor` 按工具元数据中的修改块展示并尽量定位行号，卡片与放大弹窗用「不保存执行快照」的专用说明（不是历史回放措辞）；应用重启后的历史回放同样会在放大弹窗内说明。超大文件自动降级为差异块模式，并在弹窗说明中解释原因（通常附带旧/新行数）。历史回放的行号按当前文件重新定位；若文件此后又被改动导致无法唯一定位，会显示「行号待定」并在弹窗说明只展示修改块。同一张卡片展示的是该次编辑的执行快照，不会随文件后续改动刷新；完整的显示行为说明（快照语义、刷新规则、行号图例、弹窗层级与滚动、性能提示）见仓库 [docs/display-behavior.md](https://github.com/Him666233/dsh-inline-diff/blob/main/docs/display-behavior.md)。
+插件没有网络请求或遥测，客户端不使用 `innerHTML` / `dangerouslySetInnerHTML` / `eval`。Host 只保留显示所需的修改前后文本到内存快照（LRU：最多 240 条、每侧上限 4MB，并限制总量 64MB），不落盘；Host 只读 API 受 DSH 浏览器信任边界（`connection` 准入，无该服务时回退本机 loopback 围栏）保护，并有请求体 1MB、仅 JSON、10 秒读取超时、15 秒文件读超时与 8 并发上限。超大文件与超大单行在浏览器侧有物化预算（20 万行 / 单行 100 万字符），超限自动降级为差异块并提示原因，不会冻结页面。Host 只为 `edit` / `write` 保存快照，`str_replace_editor` 按工具元数据中的修改块展示并尽量定位行号，卡片与放大弹窗用「不保存执行快照」的专用说明（不是历史回放措辞）；应用重启后的历史回放同样会在放大弹窗内说明。极端情况下按「快照 → 当前文件读取 → 工具元数据差异块 → 明确说明」逐级回退；界面语言、设置存储、语法高亮同样有中文 / 默认值兜底，最终才显示可读的错误说明而不是静默失败。历史回放的行号按当前文件重新定位；若文件此后又被改动导致无法唯一定位，会显示「行号待定」并在弹窗说明只展示修改块。同一张卡片展示的是该次编辑的执行快照，不会随文件后续改动刷新；完整的显示行为说明（快照语义、刷新规则、行号图例、弹窗层级与滚动、性能提示）见仓库 [docs/display-behavior.md](https://github.com/Him666233/dsh-inline-diff/blob/main/docs/display-behavior.md)。
 
 完整说明、内部架构与已知限制见仓库根目录 [README](https://github.com/Him666233/dsh-inline-diff#readme)。
 

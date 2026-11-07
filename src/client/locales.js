@@ -1,5 +1,42 @@
-/** Locale namespace and dictionaries for inline-diff UI copy. */
+/**
+ * 插件全部界面文案的字典（中文 / 英文）与语言常量。
+ *
+ * 职责：唯一文案来源。zh 为默认语言，en 为英文；两边**键集合必须完全一致**
+ * （README 贡献约定，tests/locales.test.mjs 有断言）。i18n.js 的 translate 按
+ * “选中语言 → zh → key 本身”回退，因此这里缺 key 不会崩，但会暴露成界面上的
+ * 原始 key。
+ *
+ * 约定：
+ *   - key 用点分层命名（title.* / state.* / settings.* / toolTitle.* …）；
+ *   - 占位符统一 `{name}`，由 i18n.js 的 formatTemplate 替换；缺参数时保留原文；
+ *   - 配色/布局相关词（IN/OUT、Lx）沿用固定大写形式，中英文一致；
+ *   - 字典是纯数据，不 import 任何模块（settings.js 与 i18n.js 都会加载它）。
+ *
+ * 依赖：无。
+ * 输入输出：NS（slot locale 命名空间）、dicts（{zh,en}）、语言常量。
+ * 失败与回退：字典本身不会失败；查不到 key 的回退逻辑在 i18n.js。
+ */
 export const NS = 'inline-diff'
+
+/*
+ * 语言常量集中定义在这里（纯数据模块，不 import 任何运行时模块），由 i18n.js
+ * 与 settings.js 共享：
+ *   - i18n.js 需要它们做语言解析与“字典回退链”；
+ *   - settings.js 需要 LANGUAGE_SETTINGS 做 settings.language 的枚举白名单；
+ *   - 1.3.0 之前 i18n.js 与 settings.js 各写了一份 ['zh','en','auto']，
+ *     一旦新增语言极容易漏改其中一处。放在 locales.js 可同时避开
+ *     i18n ⇄ settings 的循环依赖（i18n 依赖 settings 读设置）。
+ */
+
+/** 插件提供完整字典的界面语言（也是 resolveLanguage 的返回值域）。 */
+export const SUPPORTED_LANGUAGES = Object.freeze(['zh', 'en'])
+
+/** `settings.language` 的合法取值；'auto' 表示“跟随 DSH 全局语言”。 */
+export const LANGUAGE_SETTINGS = Object.freeze(['zh', 'en', 'auto'])
+
+/** 默认语言：中文。设置缺失 / 非法 / 宿主语言未知时都回退到它。 */
+export const DEFAULT_LANGUAGE = 'zh'
+
 
 const zh = {
   'title.edit': '编辑',
@@ -57,6 +94,7 @@ const zh = {
   'noticeTool': '该工具调用不保存执行快照：只能展示修改块与行号，「全文对照」不可用。',
   'noticeToolLocate': '该工具调用不保存执行快照，且当前文件已变化、无法定位行号；只展示修改块，行号标记为待定。',
   'noticeHuge': '文件较大（旧 {old} 行 / 新 {new} 行），已切换为差异块模式：保留逐行号与修改点，移动识别与「全文对照」不可用。',
+  'noticeTruncated': '文件过大，已启用截断展示：行数与增删统计仍准确，逐行内容与全文对照不可用。',
   'noticeCoarse': '文件较大，已使用粗粒度对齐：颜色与行号仍准确，移动识别已关闭。',
   'noticeLinesPending': '未能读取当前文件，行号标记为待定；差异内容仍按工具记录展示。',
   'openFile': '在文件面板中打开',
@@ -67,11 +105,23 @@ const zh = {
   'removed': '删除 {n} 行',
   'unknownRange': '行号待定',
   'fullNote': '共 {n} 行；超出显示上限的部分已截断',
+  // 单行超长（如 minified 文件）时的展示截断 title 提示：n 为该行总字符数。
+  'lineTruncated': '该行共 {n} 个字符，已截断显示',
   'emptyFile': '（空文件）',
   'settings.nav': '内联差异',
   'settings.short': '差异样式',
   'settings.title': '内联差异 · 显示样式',
   'settings.description': '只影响 Web 界面的展示方式，不改变会话记录、模型输入或工具执行。「展开风格」采用平板、透明的输出效果：文件修改显示逐次内联差异，命令与其它工具默认展开 IN/OUT；「DSH 原生」保持官方样式。',
+  // 插件级语言选择（1.3.0）。这一行的文案本身也按“当前插件语言”渲染，
+  // 因此切换语言后立刻就能看出效果。
+  'settings.language': '语言',
+  'settings.languageDesc': '插件界面的显示语言。「跟随 DSH」会跟随 DSH 的语言设置：DSH 为中文时显示中文，其他语言时显示英文。切换后立即生效，无需刷新。',
+  'settings.languageZh': '中文',
+  'settings.languageEn': 'English',
+  'settings.languageAuto': '跟随 DSH',
+  // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案。
+  'originality.title': '原创声明',
+  'originality.body': '本项目（DSH Inline Diff）完全原创，与 {repo} 以及任何其他同名插件或仓库均无任何关联。部分功能雷同纯属巧合；实现方式与代码效果完全不同；开发时没有参考任何同类插件；本项目不是对方的衍生作品或复刻作品。',
   'settings.fileCards': '文件修改卡片',
   'settings.fileCardsDesc': 'edit / write / str_replace_editor 工具调用在对话中的展示方式。展开风格显示逐次内联差异卡片，DSH 原生显示官方文件修改行。',
   'settings.syntax': '语法高亮',
@@ -119,9 +169,15 @@ const zh = {
   'settings.live': '设置自动生效',
   'shell.in': 'IN',
   'shell.out': 'OUT',
+  // 命令行退出码 / 信号徽标（[exit code: N] 标记文本由 Host 产生，这里是 UI 文案）。
+  'shell.exit': '退出码 {code}',
+  'shell.exitNull': '退出码未知',
+  'shell.signal': '信号 {name}',
   'tool.in': 'IN',
   'tool.out': 'OUT',
   'tool.fallbackTitle': '工具调用',
+  'tool.unknownName': '工具',
+  'tool.image': '[图片]',
   'readFrom': 'L {line} 起',
   'inspectTrajectory': '在轨迹中查看',
   'inspectShort': '轨迹',
@@ -231,6 +287,7 @@ const en = {
   'noticeTool': 'This tool call keeps no execution snapshot: only the changed hunks and line numbers are shown, so whole-file comparison is unavailable.',
   'noticeToolLocate': 'This tool call keeps no execution snapshot and the current file no longer matches that edit, so line numbers cannot be located; only the changed hunks are shown.',
   'noticeHuge': 'Large file (before: {old} lines, after: {new} lines) — switched to changed-hunk mode: line numbers and hunks are kept; moved-block detection and the whole-file tab are unavailable.',
+  'noticeTruncated': 'File is too large — display truncated: line counts and added/removed totals stay accurate; per-line content and the whole-file comparison are unavailable.',
   'noticeCoarse': 'Large file — coarse alignment in use. Coloring and line numbers stay accurate; moved-block detection is off.',
   'noticeLinesPending': 'The current file could not be read, so line numbers are pending; the recorded diff is still shown.',
   'openFile': 'Open in file panel',
@@ -241,11 +298,22 @@ const en = {
   'removed': '{n} removed',
   'unknownRange': 'line numbers pending',
   'fullNote': '{n} lines total; display capped',
+  // 单行超长（如 minified 文件）时的展示截断 title 提示（英文）。
+  'lineTruncated': 'Line has {n} characters; display truncated',
   'emptyFile': '(empty file)',
   'settings.nav': 'Inline Diff',
   'settings.short': 'Diff style',
   'settings.title': 'Inline Diff · Display',
   'settings.description': 'Presentation only: session records, model input, and tool execution are unchanged. The expanded style gives flat, transparent output — per-edit inline diffs for file changes and IN/OUT expanded by default for commands and other tools; DSH native keeps the stock presentation.',
+  // 插件级语言选择（1.3.0）：英文界面下的同一组选项。
+  'settings.language': 'Language',
+  'settings.languageDesc': 'Display language for this plugin. “Follow DSH” mirrors the DSH language setting: Chinese shows Chinese and any other language shows English. The switch applies immediately — no reload needed.',
+  'settings.languageZh': '中文',
+  'settings.languageEn': 'English',
+  'settings.languageAuto': 'Follow DSH',
+  // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案（英文）。
+  'originality.title': 'Originality',
+  'originality.body': 'This project (DSH Inline Diff) is a fully original work and has no affiliation with {repo} or with any other plugin or repository of a similar name. Any similarity in functionality is purely coincidental; the implementation and code behavior are entirely different; no reference was made to any such plugin during development; and this project is neither a derivative nor a replica of it.',
   'settings.fileCards': 'File-change cards',
   'settings.fileCardsDesc': 'How edit / write / str_replace_editor calls render. Expanded shows per-edit inline diff cards; DSH native shows the stock file-mutation row.',
   'settings.syntax': 'Syntax highlighting',
@@ -293,9 +361,15 @@ const en = {
   'settings.live': 'Settings apply automatically',
   'shell.in': 'IN',
   'shell.out': 'OUT',
+  // 命令行退出码 / 信号徽标（英文）。
+  'shell.exit': 'exit {code}',
+  'shell.exitNull': 'exit code unknown',
+  'shell.signal': 'signal {name}',
   'tool.in': 'IN',
   'tool.out': 'OUT',
   'tool.fallbackTitle': 'Tool call',
+  'tool.unknownName': 'Tool',
+  'tool.image': '[image]',
   'readFrom': 'from L {line}',
   'inspectTrajectory': 'Inspect in trajectory',
   'inspectShort': 'Trace',

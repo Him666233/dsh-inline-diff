@@ -1,20 +1,36 @@
 /**
- * Optional enhanced flat tool-call rows.
+ * 可选“展开风格”的通用工具调用行（搜索 / 网页 / 详情 / 通用工具的 keyed 视图）。
  *
- * These keyed `tool.call.toolview` views take over the search/web/generic tool
- * calls registered by index.jsx when the user enables the expanded style: each
- * call renders a flat IN/OUT card that shows what was sent and what came back
- * without unfolding. Commands have their own `enhanced-shell.jsx` row; tools
- * without a registered key keep the shipped DSH presentation.
+ * 背景：index.jsx 在用户开启“展开风格”后，为本模块导出的 key 清单注册
+ * `tool.call.toolview` 视图：每次调用渲染一张平铺 IN/OUT 卡片，不用先展开就能
+ * 看到“送进去什么、回来什么”。命令执行有专门的 enhanced-shell.jsx 行；没有注册
+ * key 的工具保持 DSH 原生展示（README「工具视图注册」的回退终态）。
+ *
+ * 依赖：./model.js（deriveCall / contentText / firstLine / stateKeyOf 共享纯
+ * 函数）、./tool-status.js（IN/OUT 失败归因）、./use-settings.js（配色设置）。
+ * 输入输出：导出的 key 数组供 index.jsx 注册；EnhancedExpandedTool 是 slot
+ * 组件；InspectButton / KindIcon 被其它行复用。
+ *
+ * 失败与回退：
+ *   - 参数 JSON 解析失败 → IN 段显示原始 argsRaw（可读、不吞错）；
+ *   - 结果里没有文本块 → OUT 显示错误原因（不静默空白）；
+ *   - 未落定 → OUT 占位“执行中…”；输入侧失败 → IN 红条、OUT 灰条（skipped）；
+ *   - 元数据残缺（meta 非对象/数字非有限）→ 徽标为空，摘要按可用参数降级；
+ *   - 未知工具名 → 标题回退为原始 wire name（或字典里的“工具”）。
  */
-import { useMemo, useState, useSyncExternalStore } from 'react'
-import { deriveCall } from './model.js'
-import { getSettings, subscribeSettings } from './settings.js'
+import { useMemo, useState } from 'react'
+import { contentText, deriveCall, firstLine, stateKeyOf } from './model.js'
+import { pulsePhase } from './motion.js'
 import { sectionStates } from './tool-status.js'
+import { useSettingsSnapshot } from './use-settings.js'
 
-/** Humanize one wire tool name for the flat row title. */
+/**
+ * 把 wire 工具名转成可读标题：优先查字典 toolTitle.<name>，没有则把
+ * `snake_case`/`kebab-case` 拆词并首字母大写；完全缺失时用“工具”兜底。
+ */
 function toolLabel(name, t) {
-  if (typeof name !== 'string' || name === '') return 'Tool'
+  // 没有任何可读名字时也走插件语言字典，不能硬编码英文 'Tool'。
+  if (typeof name !== 'string' || name === '') return typeof t === 'function' ? t('tool.unknownName') : 'Tool'
   if (typeof t === 'function') {
     const key = `toolTitle.${name}`
     const translated = t(key)
@@ -25,9 +41,12 @@ function toolLabel(name, t) {
     .replace(/\b[a-z]/g, letter => letter.toUpperCase())
 }
 
-/** Localized title when one exists, otherwise the exact wire tool name. */
+/**
+ * 显示名：优先字典里的本地化标题，否则保留**原始 wire 名**（不加空格、不改写），
+ * 便于用户/排查者看到真实工具名；空名用“工具”兜底。
+ */
 function wireName(name, t) {
-  if (typeof name !== 'string' || name === '') return 'Tool'
+  if (typeof name !== 'string' || name === '') return typeof t === 'function' ? t('tool.unknownName') : 'Tool'
   if (typeof t === 'function') {
     const key = `toolTitle.${name}`
     const translated = t(key)
@@ -36,13 +55,16 @@ function wireName(name, t) {
   return name
 }
 
-/** Clamp one summary line. */
+/** 摘要取首行并截断到 120 字符（保持单行且不撑破头部布局）。 */
 function clampSummary(text) {
-  const first = typeof text === 'string' ? text.split('\n')[0].trim() : ''
+  const first = typeof text === 'string' ? firstLine(text).trim() : ''
   return first.length > 120 ? first.slice(0, 120) + '…' : first
 }
 
-/** Join a few search terms into one readable summary line. */
+/**
+ * 搜索/网页工具的专用摘要：grep 显示 pattern · path · include，
+ * web_search 显示查询词（多个用分隔符连接），web_fetch 显示 URL。
+ */
 function searchSummary(call) {
   const args = call.args
   if (args === null || typeof args !== 'object') return ''
@@ -64,7 +86,13 @@ function searchSummary(call) {
   return ''
 }
 
-/** Build a one-line summary from the most descriptive argument. */
+/**
+ * 从参数里挑“最有描述性”的字段生成一行摘要。
+ *
+ * 优先工具专用摘要（搜索/网页），否则按固定优先级扫描常见字段
+ * （description、command、file_path…）；数组值（如 queries）用分隔符连接。
+ * 数组/空字符串跳过，避免显示 `[object Object]` 或空摘要。
+ */
 function summaryOf(args, call) {
   if (args === null || typeof args !== 'object') return ''
   const specific = call === undefined ? '' : searchSummary(call)
@@ -83,7 +111,11 @@ function summaryOf(args, call) {
   return ''
 }
 
-/** A compact settled-count badge derived from persisted tool metadata. */
+/**
+ * 已落定调用的紧凑计数徽标（来自持久化的工具元数据）：
+ * grep 匹配数（截断时加 '+'）、glob 文件数、web_search 来源数、web_fetch 状态码。
+ * 元数据缺失/类型不对时返回空串（不显示徽标）。
+ */
 function badgeOf(call, t) {
   if (!call.settled) return ''
   const meta = call.meta
@@ -103,7 +135,7 @@ function badgeOf(call, t) {
   return ''
 }
 
-/** Pretty input for the IN section. */
+/** IN 段的展示文本：参数对象美化 JSON；不可序列化时回退原始参数文本。 */
 function inputText(call) {
   if (call.args !== null && call.args !== undefined) {
     try {
@@ -115,80 +147,60 @@ function inputText(call) {
   return call.argsRaw ?? ''
 }
 
-/** Plain output text for the OUT section. */
-function outputText(call) {
-  const parts = []
-  for (const part of call.content) {
-    if (part === null || typeof part !== 'object') continue
-    if (part.type === 'text' && typeof part.text === 'string') parts.push(part.text)
-    else if (part.type === 'image') parts.push('[image]')
-    else parts.push(JSON.stringify(part, null, 2))
-  }
-  if (parts.length === 0 && call.error !== null && call.error !== undefined) {
-    const info = call.error
-    const reason = typeof info.reason === 'string' ? info.reason : typeof info.code === 'string' ? info.code : typeof info.name === 'string' ? info.name : ''
-    if (reason !== '') parts.push(reason)
-  }
-  return parts.join('\n')
-}
-
-/** Category drives the small glyph and the row accent. */
+/** 工具分类（决定小图标与行强调色）：command / search / web / tool。 */
 function kindOf(toolName) {
-  if (SHELL_KEYS.has(toolName)) return 'command'
+  if (SHELL_KEY_SET.has(toolName)) return 'command'
   if (toolName === 'grep' || toolName === 'glob') return 'search'
   if (toolName === 'web_search' || toolName === 'web_fetch') return 'web'
   return 'tool'
 }
 
-/** State + copy for one expanded generic tool call. */
+/**
+ * 一次通用工具调用的展示模型（纯函数，由 useMemo 缓存）。
+ * 产出标题、显示名、摘要、徽标、分类、IN/OUT 文本、整体与分段状态、是否等待输出。
+ */
 function genericModel(block, toolName, t) {
   const call = deriveCall(block)
   const stopped = call.settled && call.error !== null && call.error !== undefined && call.error.code === 'interrupted'
   const state = !call.settled
     ? (call.phase === 'preparing' ? 'preparing' : 'running')
     : stopped ? 'stopped' : call.isError ? 'error' : 'ok'
-  // IN/OUT carry their own status: a rejected call is an input failure even
-  // when the output side never ran.
+  // IN/OUT 各自带状态：被拒绝的调用即使 OUT 从未执行，也归因为输入侧失败。
   const sections = sectionStates(call)
   const resolvedName = call.name !== '' ? call.name : toolName
+  // 图片结果的占位标记也是 UI 文案，统一按插件语言渲染（t 缺失时退回英文原文）。
+  const imageMarker = typeof t === 'function' ? t('tool.image') : '[image]'
   return {
     title: toolLabel(resolvedName, t),
     displayName: wireName(resolvedName, t),
+    // 卡片稳定标识：状态点与 IN/OUT 色条据此共享同一个呼吸相位（见 motion.js）。
+    callId: call.callId,
     summary: summaryOf(call.args, call),
     badge: badgeOf(call, t),
     kind: kindOf(resolvedName),
     input: inputText(call),
-    output: call.settled ? outputText(call) : '',
+    output: call.settled ? contentText(call, imageMarker) : '',
     state,
     inputState: sections.input,
     outputState: sections.output,
-    // "Input accepted, output pending": show an OUT placeholder so its own
-    // brand-colored, pulsing bar is visible while the tool runs.
+    // “输入已接受、输出等待中”：显示 OUT 占位，让工具运行时 OUT 自己的品牌色
+    // 呼吸条保持可见。
     waitingForOutput: call.settled !== true && call.phase !== 'preparing',
   }
 }
 
-function statusKey(state) {
-  if (state === 'preparing') return 'state.preparing'
-  if (state === 'running') return 'state.running'
-  if (state === 'error') return 'state.error'
-  if (state === 'stopped') return 'state.stopped'
-  return null
-}
-
 /**
- * Expanded generic IN/OUT card used as the keyed-slot fallback. Unlike the
- * stock disclosure row it starts open; the chevron is still available so a
- * long transcript can be folded manually.
+ * 展开风格的通用 IN/OUT 卡片（keyed slot 回退视图）。
+ * 与原生折叠行不同，它默认展开；折叠箭头仍可用，长对话可以手动收起。
  */
 export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
-  const tone = useDisplaySettings()
+  const tone = useSettingsSnapshot()
   const model = useMemo(() => genericModel(block, toolName, t), [block, toolName, t])
   const [open, setOpen] = useState(true)
-  const stateLabel = statusKey(model.state)
+  const stateLabel = stateKeyOf(model.state)
   const hasBody = model.input !== '' || model.output !== ''
   return (
-    <div className="enhanced-tool enhanced-generic" data-variant="tool" data-kind={model.kind} data-state={model.state} data-tool={toolName} data-shell-tone={tone.toolShellTone} data-inner-tone={tone.toolInnerTone} data-body={hasBody && open ? 'true' : 'false'}>
+    <div className="enhanced-tool enhanced-generic" data-variant="tool" data-kind={model.kind} data-state={model.state} data-tool={toolName} data-shell-tone={tone.toolShellTone} data-inner-tone={tone.toolInnerTone} data-body={hasBody && open ? 'true' : 'false'} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
       <div className="enhanced-head">
         <span className="enhanced-kind"><KindIcon kind={model.kind} /></span>
         {hasBody ? (
@@ -249,12 +261,11 @@ export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
 }
 
 /**
- * Tools whose stock presentation is the generic `DetailsRow` (goal/schedule,
- * runtime inspection, session/job/terminal queries, subagent control, team
- * tasks, ...). They have keyed views, so the node fallback never sees them;
- * the tool-call style registers the same expanded IN/OUT card for these keys
- * when the user enables the enhanced-style tool-call option. Rich-result views
- * (Read, todo, question, image) stay native on purpose.
+ * 原生展示为通用 `DetailsRow` 的工具清单（目标/定时任务、运行时检查、
+ * 会话/任务/终端查询、子代理控制、团队任务等）。它们自带 keyed 视图，节点回退
+ * 永远看不到；当用户开启“其它工具调用”展开风格时，index.jsx 为这些 key 注册
+ * 同一张展开卡。富结果视图（Read、todo、提问、图片）**有意保持原生**，不在此列
+ * （README「工具视图注册」的边界）。
  */
 export const ENHANCED_DETAILS_KEYS = [
   'create_goal', 'get_goal', 'update_goal',
@@ -273,26 +284,28 @@ export const ENHANCED_DETAILS_KEYS = [
 ]
 
 /**
- * File-content search and web tools ship rich stock cards. The enhanced style
- * takes them over as well so one conversation does not mix flat IN/OUT rows
- * with native disclosure cards; turning the option back to DSH native restores
- * the stock cards unchanged.
+ * 文件内容搜索与网页工具原生是富卡片。展开风格同样接管它们，避免同一段对话里
+ * 平铺 IN/OUT 行与原生折叠卡片混用；把选项切回 DSH 原生即可恢复原样
+ * （README「工具视图注册」的回退链：dispose 后官方卡片回归）。
  */
 export const ENHANCED_SEARCH_WEB_KEYS = ['grep', 'glob', 'web_search', 'web_fetch']
 
-/** Command tools keep their native disclosure when the command-row option is native. */
-const SHELL_KEYS = new Set(['bash', 'pwsh', 'win_bash'])
+/**
+ * 命令执行类工具名（唯一来源）。
+ *
+ * index.jsx 的「命令执行行」接管与本模块的 kindOf 分类都按这份名单判断；
+ * 1.3.0 前两处各定义了一份，这里集中导出，避免以后新增 shell 工具时漏改。
+ * 保持数组形态（index.jsx 直接遍历注册），内部查询用 Set 保持 O(1)。
+ */
+export const SHELL_KEYS = Object.freeze(['bash', 'pwsh', 'win_bash'])
 
-/** Live display settings for the keyed enhanced rows. */
-function useDisplaySettings() {
-  return useSyncExternalStore(subscribeSettings, getSettings, getSettings)
-}
+/** SHELL_KEYS 的集合形态，供 kindOf 做 O(1) 分类。 */
+const SHELL_KEY_SET = new Set(SHELL_KEYS)
 
 /**
- * Keyless generic tools (no shipped keyed view). Stock chat/trajectory trees
- * dispatch `tool.call.toolview` by tool name and fall back to their own generic
- * row when no key exists, so registering these keys is what makes the enhanced
- * style apply even when the tool-call node renderer is not ours.
+ * 没有官方 keyed 视图的通用工具清单。原生对话/轨迹树按工具名分发
+ * `tool.call.toolview`，没有 key 时回退到官方通用行；因此为这些 key 注册视图，
+ * 才是“即使工具调用节点渲染器不是我们的，展开风格也能生效”的关键。
  */
 export const ENHANCED_GENERIC_KEYS = [
   'browser_navigate', 'browser_click', 'browser_type', 'browser_press',
@@ -311,7 +324,7 @@ export const ENHANCED_GENERIC_KEYS = [
   'task_board_github_link_pr', 'task_board_github_close_issue',
 ]
 
-/** Small category glyphs so command, search, web and generic rows read differently. */
+/** 小分类图标：让命令、搜索、网页与通用工具行在视觉上可区分。 */
 export function KindIcon({ kind }) {
   if (kind === 'command') {
     return (
@@ -344,9 +357,9 @@ export function KindIcon({ kind }) {
 }
 
 /**
- * Trajectory jump affordance shared by every enhanced-style row and diff card.
- * A labeled pill (not a bare glyph) so the action is discoverable at a glance;
- * it keeps the full "view in trajectory" wording in title/aria-label.
+ * “在轨迹中查看”入口，被所有展开风格行与差异卡片复用。
+ * 用带文字的胶囊按钮（而不是裸图标）保证一眼可发现；完整文案
+ * “在轨迹中查看”放在 title/aria-label 里，窄布局下只显示“轨迹”。
  */
 export function InspectButton({ inspect, t }) {
   if (typeof inspect !== 'function') return null
