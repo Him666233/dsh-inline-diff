@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# 最小权限：CI 只需要读取仓库内容，不需要写 token 能力。
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # npm ci 按 package-lock.json 安装 devDependencies（esbuild / highlight.js）；
+      # 构建校验与全部单元测试都只读仓库，不接触网络资源或用户数据。
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
