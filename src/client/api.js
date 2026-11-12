@@ -185,3 +185,61 @@ export async function cachedSnapshot(sessionId, callId) {
   trimCache(snapshotCache, SNAPSHOT_CACHE_LIMIT)
   return snapshot
 }
+
+/* ------------------------------------------------------------------ */
+/* 版本与更新（Host 代理 npm registry；浏览器不直连外网）                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 读取可更新版本列表（Host 侧请求 registry 并缓存 60s）。
+ *
+ * @param {boolean} [refresh] true 时强制刷新 Host 缓存。
+ * @returns {Promise<object|null>} Host 响应；失败/超时返回 null。
+ */
+export async function fetchUpdateInfo(refresh) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 25_000)
+  try {
+    const suffix = refresh === true ? '?refresh=1' : ''
+    const response = await fetch(`${API_PREFIX}/update/versions${suffix}`, {
+      credentials: 'include',
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    })
+    if (!response.ok) return null
+    const data = await response.json()
+    return data !== null && typeof data === 'object' && data.ok === true ? data : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 安装指定版本（更新或回退）。Host 侧调用官方 CLI，失败时 CLI 会自行回滚。
+ *
+ * @param {string} version 目标版本。
+ * @returns {Promise<object|null>} { ok, code?, installedVersion?, logTail?, command? }；网络失败返回 null。
+ */
+export async function performUpdate(version) {
+  const controller = new AbortController()
+  // CLI 安装最坏情况会因 pnpm 重试拖到分钟级；Host 侧自身 240s 超时并强制返回。
+  const timer = setTimeout(() => controller.abort(), 260_000)
+  try {
+    const response = await fetch(`${API_PREFIX}/update/install`, {
+      method: 'POST',
+      credentials: 'include',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ version }),
+    })
+    if (!response.ok) return null
+    const data = await response.json()
+    return data !== null && typeof data === 'object' ? data : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}

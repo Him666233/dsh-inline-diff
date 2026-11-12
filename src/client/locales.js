@@ -1,7 +1,7 @@
 /**
  * 插件全部界面文案的字典（中文 / 英文）与语言常量。
  *
- * 职责：唯一文案来源。zh 为默认语言，en 为英文；两边**键集合必须完全一致**
+ * 职责：唯一文案来源。zh 为默认/兜底语言，en 为英文；两边**键集合必须完全一致**
  * （README 贡献约定，tests/locales.test.mjs 有断言）。i18n.js 的 translate 按
  * “选中语言 → zh → key 本身”回退，因此这里缺 key 不会崩，但会暴露成界面上的
  * 原始 key。
@@ -34,8 +34,17 @@ export const SUPPORTED_LANGUAGES = Object.freeze(['zh', 'en'])
 /** `settings.language` 的合法取值；'auto' 表示“跟随 DSH 全局语言”。 */
 export const LANGUAGE_SETTINGS = Object.freeze(['zh', 'en', 'auto'])
 
-/** 默认语言：中文。设置缺失 / 非法 / 宿主语言未知时都回退到它。 */
+/** 字典回退语言：翻译回退链（选中语言 → zh → key）与宿主语言未知时的兜底。 */
 export const DEFAULT_LANGUAGE = 'zh'
+
+/**
+ * `settings.language` 的默认值：**自动跟随 DSH**。
+ *
+ * 之前的默认值是固定中文；现在默认交给 auto 解析：DSH 是中文时显示中文（与旧
+ * 行为一致），DSH 是其它语言时显示英文（插件此时没有对应字典）。设置里已明确
+ * 选择过语言的老存档会保留用户选择，只有从未选择过的旧存档才迁移成 auto。
+ */
+export const DEFAULT_LANGUAGE_SETTING = 'auto'
 
 
 const zh = {
@@ -115,10 +124,10 @@ const zh = {
   // 插件级语言选择（1.3.0）。这一行的文案本身也按“当前插件语言”渲染，
   // 因此切换语言后立刻就能看出效果。
   'settings.language': '语言',
-  'settings.languageDesc': '插件界面的显示语言。「跟随 DSH」会跟随 DSH 的语言设置：DSH 为中文时显示中文，其他语言时显示英文。切换后立即生效，无需刷新。',
+  'settings.languageDesc': '插件界面的显示语言。默认「跟随 DSH」：DSH 为中文时显示中文，其他语言时显示英文；也可以固定中文/英文。切换后立即生效，无需刷新。',
   'settings.languageZh': '中文',
   'settings.languageEn': 'English',
-  'settings.languageAuto': '跟随 DSH',
+  'settings.languageAuto': '跟随 DSH（默认）',
   // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案。
   'originality.title': '原创声明',
   'originality.body': '本项目（DSH Inline Diff）完全原创，与 {repo} 以及任何其他同名插件或仓库均无任何关联。部分功能雷同纯属巧合；实现方式与代码效果完全不同；开发时没有参考任何同类插件；本项目不是对方的衍生作品或复刻作品。',
@@ -165,8 +174,71 @@ const zh = {
   'settings.subagentNote': '子代理会话与主会话共用这套设置；差异快照按各自 Session 独立记录，互不影响。',
   'settings.dsmCurrent': '当前 DSH 对话记录模式：{mode}',
   'settings.reset': '恢复默认',
+  'update.title': '版本与更新',
+  'update.current': '当前版本 v{version}',
+  'update.latest': '最新',
+  'update.installed': '当前',
+  'update.deprecated': '已废弃',
+  'update.unavailable': '不可安装',
+  'update.check': '检查更新',
+  'update.checking': '正在查询…',
+  'update.versions': '版本列表',
+  'update.selectVersion': '选择版本',
+  'update.updateTo': '更新到 v{version}',
+  'update.rollbackTo': '回退到 v{version}',
+  'update.reinstall': '重新安装 v{version}',
+  'update.installing': '正在安装…',
+  'update.restartHint': '安装后需要重启 DSH 才会生效',
+  'update.manualHint': '当前环境需手动安装（见下方命令）',
+  'update.manualCommandHint': '请先完全退出 DSH，然后在命令行执行（profile：{profile}）',
+  'update.idleHint': '点击「检查更新」查看 npm 上的全部版本',
+  'update.installOk': '已安装 v{version}，重启 DSH 后生效',
+  'update.installFailed': '安装失败（{code}）',
+  'update.log': '安装日志',
+  'update.errorNetwork': '无法获取版本信息（网络或 registry 不可用）',
+
   'settings.saving': '正在保存…',
   'settings.live': '设置自动生效',
+  // ---- 逐表面外观效果（1.4.0）----
+  // 设置面板末尾的「外观效果」折叠分组。表面 id → 文案键的映射在 surfaces.js
+  // 的 SURFACES 里（labelKey / descKey），键名必须与那边完全一致。
+  'fx.sectionTitle': '外观效果',
+  'fx.sectionDesc': '为每个可视表面单独选择材质。原生保持现有外观（默认）；磨砂玻璃为半透明高斯模糊材质，可调透明度与模糊；液态玻璃为 iOS 26 风格，另有「完全通透 / 带一点模糊」两种液态模式。改动即时保存并生效。',
+  'fx.note': '玻璃效果依赖浏览器的 backdrop-filter，现代 Chromium / Safari 可用；不支持时会自动退回半透明底色，文字仍然可读。「恢复默认」会同时把所有表面恢复为原生。',
+  // 折叠标题 = fx.sectionTitle + 下面两条（键里自带本语言习惯的括号，标题因此
+  // 在两种语言下都是自然写法：「外观效果（3 个表面已启用）」）。
+  'fx.summaryCount': '（{n} 个表面已启用）',
+  'fx.summaryNone': '（全部原生）',
+  'fx.effect': '效果',
+  'fx.effectNative': '原生',
+  'fx.effectGlass': '磨砂玻璃',
+  'fx.effectLiquid': '液态玻璃',
+  'fx.effectNativeDesc': '保持当前外观，不做任何材质处理（默认）。',
+  'fx.effectGlassDesc': '半透明磨砂玻璃：背景高斯模糊 + 细高光描边，透明度与模糊可调。',
+  'fx.effectLiquidDesc': '液态玻璃：更通透的折射观感与边缘高光，可选「完全通透」或「带一点模糊」。',
+  'fx.opacity': '透明度',
+  'fx.blur': '模糊',
+  'fx.liquidMode': '液态模式',
+  'fx.liquidClear': '完全通透',
+  'fx.liquidFrosted': '带一点模糊',
+  'fx.surface.fileCardHeader': '文件卡片头部',
+  'fx.surface.fileCardHeaderDesc': '文件修改卡片顶部可展开 / 收起的一行。',
+  'fx.surface.fileCardBody': '文件卡片内容区',
+  'fx.surface.fileCardBodyDesc': '文件修改卡片的差异内容与底部状态条。',
+  'fx.surface.diffModal': '放大对照弹窗',
+  'fx.surface.diffModalDesc': '在卡片上点「放大」后打开的整窗差异对照。',
+  'fx.surface.commandHeader': '命令卡片头部',
+  'fx.surface.commandHeaderDesc': 'bash / pwsh 等命令执行卡片的标题行。',
+  'fx.surface.commandIO': '命令 IN/OUT',
+  'fx.surface.commandIODesc': '命令卡片的输入与输出面板。',
+  'fx.surface.toolHeader': '工具卡片头部',
+  'fx.surface.toolHeaderDesc': '其它工具调用卡片的标题行。',
+  'fx.surface.toolIO': '工具 IN/OUT',
+  'fx.surface.toolIODesc': '其它工具调用卡片的输入与输出面板。',
+  'fx.surface.readRangeChip': '读取行范围徽标',
+  'fx.surface.readRangeChipDesc': '读取文件时显示行范围的小徽标。',
+  'fx.surface.settingsPanel': '设置面板',
+  'fx.surface.settingsPanelDesc': '本设置弹窗与设置页的整个面板。',
   'shell.in': 'IN',
   'shell.out': 'OUT',
   // 命令行退出码 / 信号徽标（[exit code: N] 标记文本由 Host 产生，这里是 UI 文案）。
@@ -307,10 +379,10 @@ const en = {
   'settings.description': 'Presentation only: session records, model input, and tool execution are unchanged. The expanded style gives flat, transparent output — per-edit inline diffs for file changes and IN/OUT expanded by default for commands and other tools; DSH native keeps the stock presentation.',
   // 插件级语言选择（1.3.0）：英文界面下的同一组选项。
   'settings.language': 'Language',
-  'settings.languageDesc': 'Display language for this plugin. “Follow DSH” mirrors the DSH language setting: Chinese shows Chinese and any other language shows English. The switch applies immediately — no reload needed.',
+  'settings.languageDesc': 'Display language for this plugin. Default “Follow DSH” mirrors the DSH language setting: Chinese shows Chinese and any other language shows English; you can also pin Chinese or English. The switch applies immediately — no reload needed.',
   'settings.languageZh': '中文',
   'settings.languageEn': 'English',
-  'settings.languageAuto': 'Follow DSH',
+  'settings.languageAuto': 'Follow DSH (default)',
   // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案（英文）。
   'originality.title': 'Originality',
   'originality.body': 'This project (DSH Inline Diff) is a fully original work and has no affiliation with {repo} or with any other plugin or repository of a similar name. Any similarity in functionality is purely coincidental; the implementation and code behavior are entirely different; no reference was made to any such plugin during development; and this project is neither a derivative nor a replica of it.',
@@ -357,8 +429,73 @@ const en = {
   'settings.subagentNote': 'Subagent sessions use the same settings; diff snapshots are recorded per Session and never interfere.',
   'settings.dsmCurrent': 'Current DSH transcript mode: {mode}',
   'settings.reset': 'Reset to defaults',
+  'update.title': 'Version & updates',
+  'update.current': 'Current version v{version}',
+  'update.latest': 'Latest',
+  'update.installed': 'Installed',
+  'update.deprecated': 'Deprecated',
+  'update.unavailable': 'Unavailable',
+  'update.check': 'Check for updates',
+  'update.checking': 'Checking…',
+  'update.versions': 'Version list',
+  'update.selectVersion': 'Select a version',
+  'update.updateTo': 'Update to v{version}',
+  'update.rollbackTo': 'Roll back to v{version}',
+  'update.reinstall': 'Reinstall v{version}',
+  'update.installing': 'Installing…',
+  'update.restartHint': 'Restart DSH after installing to take effect',
+  'update.manualHint': 'Manual install required here (see command below)',
+  'update.manualCommandHint': 'Quit DSH completely, then run in a terminal (profile: {profile})',
+  'update.idleHint': 'Click “Check for updates” to list all npm versions',
+  'update.installOk': 'Installed v{version}; restart DSH to take effect',
+  'update.installFailed': 'Install failed ({code})',
+  'update.log': 'Install log',
+  'update.errorNetwork': 'Could not load versions (network or registry unavailable)',
+
   'settings.saving': 'Saving…',
   'settings.live': 'Settings apply automatically',
+  // ---- Per-surface appearance effects (1.4.0) ----
+  // Labels/descriptions for the “Appearance effects” group at the end of the
+  // settings panel. The surface id → key mapping lives in surfaces.js
+  // (SURFACES[].labelKey / descKey) and must stay in sync with these keys.
+  'fx.sectionTitle': 'Appearance effects',
+  'fx.sectionDesc': 'Choose a material for each visible surface. Native keeps the current look (default). Frosted glass is a translucent, blurred material with adjustable opacity and blur. Liquid glass follows the iOS 26 look with its own Clear / Slightly frosted liquid modes. Changes save and apply immediately.',
+  'fx.note': 'Glass effects rely on the browser backdrop-filter, available in modern Chromium / Safari; unsupported browsers fall back to a translucent color so text stays readable. “Reset to defaults” also returns every surface to native.',
+  // Collapsible title = fx.sectionTitle + one of these; the brackets live in the
+  // translated string so both languages read naturally (“Appearance effects (3
+  // surfaces enabled)”).
+  'fx.summaryCount': ' ({n} surfaces enabled)',
+  'fx.summaryNone': ' (all native)',
+  'fx.effect': 'Effect',
+  'fx.effectNative': 'Native',
+  'fx.effectGlass': 'Frosted glass',
+  'fx.effectLiquid': 'Liquid glass',
+  'fx.effectNativeDesc': 'Keeps the current look with no material treatment (default).',
+  'fx.effectGlassDesc': 'Translucent frosted glass: a blurred backdrop with a thin highlight edge; opacity and blur are adjustable.',
+  'fx.effectLiquidDesc': 'Liquid glass: a clearer, refractive look with edge highlights; choose Clear or Slightly frosted.',
+  'fx.opacity': 'Opacity',
+  'fx.blur': 'Blur',
+  'fx.liquidMode': 'Liquid mode',
+  'fx.liquidClear': 'Clear',
+  'fx.liquidFrosted': 'Slightly frosted',
+  'fx.surface.fileCardHeader': 'File card header',
+  'fx.surface.fileCardHeaderDesc': 'The clickable row at the top of a file-change card.',
+  'fx.surface.fileCardBody': 'File card body',
+  'fx.surface.fileCardBodyDesc': 'The diff content and footer status strip of a file-change card.',
+  'fx.surface.diffModal': 'Comparison dialog',
+  'fx.surface.diffModalDesc': 'The full-window diff view opened from a card.',
+  'fx.surface.commandHeader': 'Command card header',
+  'fx.surface.commandHeaderDesc': 'The title row of a command card (bash, pwsh, …).',
+  'fx.surface.commandIO': 'Command IN/OUT',
+  'fx.surface.commandIODesc': 'The input and output panels of a command card.',
+  'fx.surface.toolHeader': 'Tool card header',
+  'fx.surface.toolHeaderDesc': 'The title row of other tool-call cards.',
+  'fx.surface.toolIO': 'Tool IN/OUT',
+  'fx.surface.toolIODesc': 'The input and output panels of other tool-call cards.',
+  'fx.surface.readRangeChip': 'Read range chip',
+  'fx.surface.readRangeChipDesc': 'The small line-range chip shown for file reads.',
+  'fx.surface.settingsPanel': 'Settings panel',
+  'fx.surface.settingsPanelDesc': 'The whole settings dialog and settings page.',
   'shell.in': 'IN',
   'shell.out': 'OUT',
   // 命令行退出码 / 信号徽标（英文）。

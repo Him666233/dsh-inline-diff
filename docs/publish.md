@@ -10,9 +10,9 @@ dsh plugin add @him666233/dsh-inline-diff
 
 1. 本地完成代码、文档、双语截图与发行版打包，跑通全部检查（`node build.mjs --check`、`npm test`、`npm pack --dry-run`）；
 2. **先**把源码提交到 GitHub，并创建 Release 上传 `release/` 下的两个 zip、`SHA256SUMS.txt`、`RELEASE_NOTES-<版本>.md`；
-3. GitHub 内容确认无误后，**再**执行 `npm publish`。npm 版本一旦发布不可撤回（只能 `npm deprecate`），所以顺序不能反。
+3. GitHub 内容确认无误后，**再**执行 `cd plugin && npm publish`。npm 版本一旦发布不可撤回（只能 `npm deprecate`），所以顺序不能反。
 
-当前目标版本：**1.3.0**（首次 npm 发布版本）；npm 用户名已确定为 `him666233`，对应 scope `@him666233`。在收到明确发布指令前**不要**执行 `npm publish`。
+当前目标版本：**1.4.0**；npm 用户名已确定为 `him666233`，对应 scope `@him666233`。在收到明确发布指令前**不要**执行 `npm publish`。
 
 ## 一、DSH 插件的发布形态
 
@@ -65,12 +65,12 @@ node scripts/set-package-name.mjs @你的npm用户名/dsh-inline-diff
 npm install                  # 仅首次或依赖变化时需要
 node build.mjs               # 重新生成 plugin/client.js 与 plugin/cordis.patch.yml
 node build.mjs --check       # 校验已提交产物与源码、包名一致（CI 也跑这个）
-npm test                     # 124 项单元测试
+npm test                     # 164 项单元测试
 cd plugin
 npm pack --dry-run           # 确认发布文件清单
 ```
 
-`npm pack --dry-run` 应列出 9 个文件：`package.json`、`cordis.patch.yml`、`client.js`、`index.js`、`locale/en.json`、`locale/zh.json`、`icon.svg`、`README.md`、`LICENSE`（`src/`、`tests/`、`docs/` 不会进包）。
+`npm pack --dry-run` 应列出 **10 个文件**：`package.json`、`cordis.patch.yml`、`client.js`、`index.js`、`locale/en.json`、`locale/zh.json`、`icon.svg`、`README.md`、`README.en.md`、`LICENSE`（`src/`、`tests/`、`docs/`、`release/` 不会进包）。
 
 ## 五、正式发布
 
@@ -100,7 +100,7 @@ npm publish
 ```bash
 node build.mjs            # 重建 plugin/client.js 与 plugin/cordis.patch.yml
 node build.mjs --check    # 产物与源码/包名一致
-npm test                  # 124 项全部通过
+npm test                  # 164 项全部通过
 node scripts/build-release.mjs
 ```
 

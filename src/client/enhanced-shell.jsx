@@ -19,9 +19,11 @@
  *   - 未落定时 OUT 显示占位（“执行中…”），让 OUT 自己的呼吸色条可见；
  *   - 未知/异常 block 由 deriveCall 归一成安全默认值，组件不会抛错。
  */
-import { useMemo } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { contentText, deriveCall, firstLine, parseArgs } from './model.js'
-import { pulsePhase } from './motion.js'
+import { isLiveToolState, pulsePhase } from './motion.js'
+import { fxRootProps, surfaceProps } from './surfaces.js'
+import { usePulseSync } from './use-pulse-sync.js'
 import { InspectButton, KindIcon } from './enhanced-tools.jsx'
 import { shellSectionStates } from './tool-status.js'
 import { useSettingsSnapshot } from './use-settings.js'
@@ -110,7 +112,17 @@ function shellModel(block, toolName) {
 export function EnhancedShellCard(props) {
   const { block, toolName, phase, t, inspect } = props
   const tone = useSettingsSnapshot()
+  // 卡片根 ref：把卡内呼吸动画对齐到同一相位（圆点与 IN/OUT 状态条同时亮）。
+  const pulseRef = usePulseSync()
   const model = useMemo(() => shellModel(block, toolName), [block, toolName])
+  // 入场动画只在“运行中/准备中”挂载时播放；历史回放/已结算直接显示终态。
+  const [enter] = useState(() => isLiveToolState(model.state))
+  // 输出到达前 OUT 是“执行中…”占位；占位切到真实输出的那一帧给 OUT 段一次
+  // 轻微的淡入，避免输出文本凭空出现。历史卡片挂载时 waiting=false，不触发。
+  const waitingRef = useRef(model.waitingForOutput)
+  const outputAppeared = useRef(false)
+  if (model.output !== '' && waitingRef.current) outputAppeared.current = true
+  waitingRef.current = model.waitingForOutput
   const hasIO = model.input !== '' || model.output !== '' || model.waitingForOutput
   const stateLabel = model.state === 'error'
     ? t('state.error')
@@ -120,8 +132,8 @@ export function EnhancedShellCard(props) {
         ? t('state.running')
         : model.state === 'preparing' ? t('state.preparing') : ''
   return (
-    <div className="enhanced-tool enhanced-command" data-variant="command" data-state={model.state} data-tool={toolName} data-shell-tone={tone.shellShellTone} data-inner-tone={tone.shellInnerTone} data-body={hasIO ? 'true' : 'false'} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
-      <div className="enhanced-head">
+    <div className="enhanced-tool enhanced-command" ref={pulseRef} {...fxRootProps(tone, ['commandHeader', 'commandIO'])} data-variant="command" data-state={model.state} data-tool={toolName} data-shell-tone={tone.shellShellTone} data-inner-tone={tone.shellInnerTone} data-body={hasIO ? 'true' : 'false'} data-enter={enter ? '' : undefined} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
+      <div className="enhanced-head" {...surfaceProps(tone, 'commandHeader')}>
         <span className="enhanced-kind"><KindIcon kind="command" /></span>
         <span className="enhanced-dot" aria-hidden="true" />
         <span className="enhanced-name">{model.title}</span>
@@ -142,7 +154,7 @@ export function EnhancedShellCard(props) {
         </span>
       </div>
       {hasIO ? (
-        <div className="enhanced-io">
+        <div className="enhanced-io" {...surfaceProps(tone, 'commandIO')}>
           {model.input !== '' ? (
             <div className="enhanced-section" data-section="in" data-state={model.inputState}>
               <span className="enhanced-label">{t('shell.in')}</span>
@@ -153,7 +165,7 @@ export function EnhancedShellCard(props) {
           ) : null}
           {model.input !== '' && model.output !== '' ? <div className="enhanced-divider" aria-hidden="true" /> : null}
           {model.output !== '' ? (
-            <div className="enhanced-section" data-section="out" data-state={model.outputState}>
+            <div className="enhanced-section" data-section="out" data-state={model.outputState} data-appear={outputAppeared.current ? '' : undefined}>
               <span className="enhanced-label">{t('shell.out')}</span>
               <div className="enhanced-scroll">
                 <pre className="enhanced-code" data-error={model.outputState === 'error' ? '' : undefined}>{model.output}</pre>

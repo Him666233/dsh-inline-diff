@@ -20,14 +20,38 @@
  *   - fiber 上找不到 block / 找不到原生头 / 找不到文件链接 → 该行跳过，不挂
  *     角标也不报错（原生卡片保持原样）；
  *   - 范围无法推导（null）→ 移除该行已有角标；
- *   - 角标是纯展示节点：不替换卡片、不改 disclosure、不拦截原生事件。
+ *   - 角标是纯展示节点：不替换卡片、不改 disclosure、不拦截原生事件；
+ *   - 外观效果（原生 / 磨砂玻璃 / 液态玻璃）与其它表面一样逐表面可配：角标被
+ *     创建/复用时写入 data-fx / data-fx-surface / --did-fx-alpha / --did-fx-blur，
+ *     设置变化时由 subscribeSettings 统一刷新现有角标（见 applyChipAppearance）。
  */
 import { readRangeLabels, readRangesForBlock } from './read-range.js'
+import { getSettings, subscribeSettings } from './settings.js'
+import { EFFECT_LIQUID, surfaceDomValues } from './surfaces.js'
 
 /** 角标节点标记属性：用于查找/去重/清理。 */
 const CHIP_ATTR = 'data-dsh-inline-diff-read-range'
 /** 行元素 → { block, label }：同一 block 的角标只推导一次。 */
 const rowCache = new WeakMap()
+
+/**
+ * 把当前「读取行范围徽标」的外观效果写到角标 DOM 上（幂等）。
+ *
+ * 角标是直接操作 DOM 创建的，不经过 React 渲染，因此这里手动维护与其它表面
+ * 相同的属性契约（data-fx / data-fx-surface / data-liquid-mode / CSS 变量），
+ * 由 styles.js 的外观效果区段统一渲染。设置非法/缺失时回退 native（无视觉变化）。
+ *
+ * @param {Element} chip - 角标节点。
+ */
+function applyChipAppearance(chip) {
+  const config = surfaceDomValues(getSettings(), 'readRangeChip')
+  chip.setAttribute('data-fx', config.effect)
+  chip.setAttribute('data-fx-surface', 'readRangeChip')
+  if (config.effect === EFFECT_LIQUID) chip.setAttribute('data-liquid-mode', config.mode)
+  else chip.removeAttribute('data-liquid-mode')
+  chip.style.setProperty('--did-fx-alpha', String(config.opacity))
+  chip.style.setProperty('--did-fx-blur', `${config.blur}px`)
+}
 
 /**
  * 从一个 DOM 节点沿 React fiber 向上找工具调用 block。
@@ -96,6 +120,9 @@ function syncReadRow(row, t) {
   }
   if (chip.textContent !== label) chip.textContent = label
   if (chip.title !== label) chip.title = label
+  // 外观效果：每次同步都写一次（属性赋值幂等且很便宜），保证设置切换后新出现
+  // 的角标也立即使用当前效果。
+  applyChipAppearance(chip)
   // 展开态不显示角标：内容已经可见，角标只会重复占位。
   const expanded = explicitHeader.getAttribute('aria-expanded') === 'true'
   if (chip.hidden !== expanded) chip.hidden = expanded
@@ -185,10 +212,20 @@ export function startReadRangeChips(t) {
     observer.disconnect()
     return () => {}
   }
+  // 外观效果设置变化时刷新所有已有角标（设置面板逐表面即时生效，不需要刷新页面）。
+  let unsubscribeSettings = () => {}
+  try {
+    unsubscribeSettings = subscribeSettings(() => {
+      for (const chip of document.querySelectorAll(`[${CHIP_ATTR}]`)) applyChipAppearance(chip)
+    })
+  } catch {
+    unsubscribeSettings = () => {}
+  }
   let stopped = false
   return () => {
     if (stopped) return
     stopped = true
+    unsubscribeSettings()
     observer.disconnect()
     if (frame !== null) {
       if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)

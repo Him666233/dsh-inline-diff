@@ -4,20 +4,20 @@
 
 > **Originality notice (important)**: This project is **an entirely original work**. It has **no relationship whatsoever** with [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff) **or any other plugin, repository, or project with the same or a similar name**. This project did not reference, copy, or port any of those projects; the implementation approach, module split, code organization, and final rendering are completely different. Any similarity in part of the functionality (inline diff display in conversations) is **coincidental** — this project only discovered the same-named/similar project when searching for similar plugins after the implementation was already complete. This project is **not** a derivative work, a re-creation, or a fork of any other project.
 
-DeepSeek Harness plugin: renders inline diff cards in place for every `edit` / `write` / `str_replace_editor` call in the conversation, automatically detects the file language (57 languages) and applies red/green-safe syntax highlighting, and provides side-by-side comparison, inline character-level highlighting, moved-block and passive line-number annotations, and Read range display; command, search, web, and generic tool calls can also switch to the expanded style (IN/OUT open by default), and command and tool cards color their input/output status per segment. **Since 1.3.0 the UI and documentation are fully bilingual (Chinese / English), with an independent language switch on the settings page (Chinese by default).**
+DeepSeek Harness plugin: renders inline diff cards in place for every `edit` / `write` / `str_replace_editor` call in the conversation, automatically detects the file language (57 languages) and applies red/green-safe syntax highlighting, and provides side-by-side comparison, inline character-level highlighting, moved-block and passive line-number annotations, and Read range display; command, search, web, and generic tool calls can also switch to the expanded style (IN/OUT open by default), and command and tool cards color their input/output status per segment. **Since 1.3.0 the UI and documentation are fully bilingual (Chinese / English), with an independent language switch on the settings page; since 1.4.0 the default is “Follow DSH”, and the release adds card/output/dialog motion plus a built-in version check, update and rollback panel in the settings page.**
 
 - **Author**: [Him666233](https://github.com/Him666233)
 - **Repository**: [Him666233/dsh-inline-diff](https://github.com/Him666233/dsh-inline-diff)
 - **License**: MIT
 - **npm**: `@him666233/dsh-inline-diff`
-- **Current version**: 1.3.0
+- **Current version**: 1.4.0
 
 > “Expanded style / Expanded” in the settings means the expanded, flat, transparent output style of modern coding agents; the project contains no third-party product brand names.
 
 ## Compatibility
 
 - **DSH version range (`engines.dsh`)**: `>=0.2.2-rc.1 <0.3.0`
-- **Tested version**: `0.2.2-rc.1`
+- **Tested versions**: `0.2.2-rc.1` (desktop profile) and `0.2.2-rc.2` (Web profile)
 - Outside the `engines.dsh` range, the DSH loader refuses to load the plugin and never silently runs an unverified version
 - If the desktop app and the Web UI use different profiles, the plugin must be installed separately in each
 - Does not shadow the tool-call entries of `conversation.chat.node` (the official Tool layer owns that entry and declares the `tool.call.toolview` sub-slot, and declaring it again throws); only registered tool rows are taken over through keyed `tool.call.toolview`, and unregistered tools keep the official generic row
@@ -84,13 +84,20 @@ Then add the following to the profile's `package.json`:
 
 Bottom of the sidebar → “Diff style”, or the DSH settings page → “Inline Diff”:
 
-**Language (new in 1.3.0)**:
+**Language (new in 1.3.0; Follow DSH is the default since 1.4.0)**:
 
 | Setting | Options |
 | --- | --- |
-| Language | 中文 (default) / English / Follow DSH |
+| Language | 中文 / English / **Follow DSH (default)** |
 
-Changes take effect immediately without a refresh and never modify DSH's global language; documentation language: Chinese is the default ([README.md](README.md)), and English is in this file ([README.en.md](README.en.md)). The top of the settings page also shows a prominent originality notice: this project is a fully original work and has no relationship with any same-named/similar plugin (including [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff)).
+Changes take effect immediately without a refresh and never modify DSH's global language; the default follows DSH (Chinese when DSH is Chinese, English for other host languages). Old archives that never explicitly picked a language migrate once to Follow DSH; explicit choices are preserved. documentation language: Chinese is the default ([README.md](README.md)), and English is in this file ([README.en.md](README.en.md)). The top of the settings page also shows a prominent originality notice: this project is a fully original work and has no relationship with any same-named/similar plugin (including [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff)).
+
+**Version & updates (new in 1.4.0)**:
+
+| Action | Description |
+| --- | --- |
+| Check for updates | The Host reads every published version of `@him666233/dsh-inline-diff` from npm (60s cache) and marks Latest / Installed / Deprecated / Unavailable |
+| Update / roll back / reinstall | Pick any version and the action follows the version relationship; on Web it runs the official plugin-install command once (automatic rollback with log on failure) and tells you to restart DSH afterwards; on Desktop a copyable command is shown (quit DSH completely first) |
 
 Four display styles:
 
@@ -112,11 +119,15 @@ Syntax highlighting and language badge (independent of the table above):
 | Unknown language | Show “Unknown” / Hide |
 | Font emphasis | Color + font style / Color only |
 
-Settings are saved in localStorage (`dsh-inline-diff.settings.v4`); old v3 / v2 values are migrated automatically and the old keys are removed.
+Settings are saved in localStorage (`dsh-inline-diff.settings.v5`); old v4 / v3 / v2 values are migrated automatically and the old keys are removed. The default UI language is “Follow DSH”.
 
 ## Data and limitations
 
-The plugin makes no network requests and has no telemetry, and the client uses no `innerHTML` / `dangerouslySetInnerHTML` / `eval`. The Host keeps only the before/after text needed for display in in-memory snapshots (LRU: at most 240 entries, 4 MB per side, plus a 64 MB total cap) and never writes it to disk; the Host read-only APIs are protected by the DSH browser trust boundary (`connection` admission, falling back to a local loopback fence when that service is unavailable), with a 1 MB request-body cap, JSON-only bodies, a 10-second request-read timeout, a 15-second file-read timeout, and an 8-concurrent-read limit. Very large files and very long single lines have a materialization budget on the browser side (200k lines / 1,000,000 characters per line); beyond it the plugin automatically degrades to changed hunks with a reason notice and never freezes the page. The Host saves snapshots only for `edit` / `write`, while `str_replace_editor` shows the changed hunks from the tool metadata and tries to locate line numbers — its card and the expanded dialog use a dedicated “this tool call keeps no execution snapshot” notice (not history-replay wording); after an app restart, history replay is likewise explained in the expanded dialog. In extreme cases the plugin falls back step by step: “snapshot → current-file read → tool-metadata changed hunks → explicit explanation”; the UI language, settings storage, and syntax highlighting also have Chinese / default-value fallbacks, so the final outcome is a readable explanation rather than a silent failure. History-replay line numbers are located again in the current file; if the file has since changed and the hunk cannot be located uniquely, “line numbers pending” is shown and the dialog explains that only the changed hunks can be shown. The same card shows the execution snapshot of that edit and does not refresh as the file changes later; the full display behavior (snapshot semantics, refresh rules, line-number legend, dialog layering and scrolling, performance notes) is documented in the repository's [docs/display-behavior.en.md](https://github.com/Him666233/dsh-inline-diff/blob/main/docs/display-behavior.en.md).
+By default the plugin makes no network requests and has no telemetry, and the client uses no `innerHTML` / `dangerouslySetInnerHTML` / `eval`; the only exception is when the user explicitly clicks “Check for updates / Install”, where the Host fetches npm registry metadata and invokes the local `dsh` CLI. Those requests contain only the package name/version — never session content, file content, keys or device information. The Host keeps only the before/after text needed for display in in-memory snapshots (LRU: at most 240 entries, 4 MB per side, plus a 64 MB total cap) and never writes it to disk; the Host read-only APIs are protected by the DSH browser trust boundary (`connection` admission, falling back to a local loopback fence when that service is unavailable), with a 1 MB request-body cap, JSON-only bodies, a 10-second request-read timeout, a 15-second file-read timeout, and an 8-concurrent-read limit. Very large files and very long single lines have a materialization budget on the browser side (200k lines / 1,000,000 characters per line); beyond it the plugin automatically degrades to changed hunks with a reason notice and never freezes the page. The Host saves snapshots only for `edit` / `write`, while `str_replace_editor` shows the changed hunks from the tool metadata and tries to locate line numbers — its card and the expanded dialog use a dedicated “this tool call keeps no execution snapshot” notice (not history-replay wording); after an app restart, history replay is likewise explained in the expanded dialog. In extreme cases the plugin falls back step by step: “snapshot → current-file read → tool-metadata changed hunks → explicit explanation”; the UI language, settings storage, and syntax highlighting also have Chinese / default-value fallbacks, so the final outcome is a readable explanation rather than a silent failure. History-replay line numbers are located again in the current file; if the file has since changed and the hunk cannot be located uniquely, “line numbers pending” is shown and the dialog explains that only the changed hunks can be shown. The same card shows the execution snapshot of that edit and does not refresh as the file changes later; the full display behavior (snapshot semantics, refresh rules, line-number legend, dialog layering and scrolling, performance notes) is documented in the repository's [docs/display-behavior.en.md](https://github.com/Him666233/dsh-inline-diff/blob/main/docs/display-behavior.en.md).
+
+Motion: tasteful animations only cover running-card mount, output arrival and dialog opens; historical replay and settled cards render their final state immediately, and everything is disabled when the OS “reduce motion” preference is on.
+
+Version & updates: the panel lists only npm releases; a one-click install replaces the current profile installation with the npm release (a local dev build would be overwritten), and DSH must be restarted afterwards. Desktop v1 has no in-place one-click install and shows a manual command instead.
 
 For the full documentation, internal architecture, and known limitations, see the repository's [README](https://github.com/Him666233/dsh-inline-diff/blob/main/README.en.md).
 

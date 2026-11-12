@@ -15,7 +15,7 @@
  *      previousTranscript 的 DSH transcriptView 白名单、updateSettings 的
  *      已知键/枚举/布尔形状校验。
  *
- * 注意：settings.js 在模块求值时就读取 localStorage 并把存档迁移为 v4，因此
+ * 注意：settings.js 在模块求值时就读取 localStorage 并把存档迁移为 v5，因此
  * “不同存档”的用例必须用带 query 串的动态 import 拿到全新的模块实例（ESM 按
  * 完整 URL 缓存），并在 import 前装好内存版 localStorage。
  */
@@ -24,6 +24,7 @@ import assert from 'node:assert/strict'
 import { dicts } from '../src/client/locales.js'
 import {
   DEFAULT_LANGUAGE,
+  DEFAULT_LANGUAGE_SETTING,
   LANGUAGE_SETTINGS,
   SUPPORTED_LANGUAGES,
   attachHostLocale,
@@ -47,9 +48,10 @@ import {
 } from '../src/client/settings.js'
 
 /** settings.js 里使用的 localStorage key（与实现保持同步，供迁移断言用）。 */
-const STORAGE_KEY = 'dsh-inline-diff.settings.v4'
-const LEGACY_KEY = 'dsh-inline-diff.settings.v3'
-const OLDER_KEY = 'dsh-inline-diff.settings.v2'
+const STORAGE_KEY = 'dsh-inline-diff.settings.v5'
+const LEGACY_KEY = 'dsh-inline-diff.settings.v4'
+const OLDER_KEY = 'dsh-inline-diff.settings.v3'
+const V2_KEY = 'dsh-inline-diff.settings.v2'
 
 /* ========================================================================
  * 测试基建
@@ -115,8 +117,8 @@ async function withFreshSettings(seed, options, run) {
   }
 }
 
-/** 生成一条 v4 存档（默认已含 language 字段以外的内容）。 */
-function v4(record) {
+/** 生成一条当前格式（v5）的存档。 */
+function archive(record) {
   return { [STORAGE_KEY]: JSON.stringify(record) }
 }
 
@@ -124,14 +126,21 @@ function v4(record) {
  * 1. 常量与 resolveLanguage
  * ===================================================================== */
 
-test('语言常量：默认中文，支持 zh/en，设置项为 zh/en/auto', () => {
+test('语言常量：字典兜底中文、设置默认 auto 跟随 DSH，支持 zh/en/auto', () => {
+  // 字典只有中文/英文两套，回退链最后落到 zh。
   assert.equal(DEFAULT_LANGUAGE, 'zh')
+  assert.equal(DEFAULT_LANGUAGE_SETTING, 'auto')
   assert.deepEqual([...SUPPORTED_LANGUAGES], ['zh', 'en'])
   assert.deepEqual([...LANGUAGE_SETTINGS], ['zh', 'en', 'auto'])
-  assert.equal(DEFAULTS.language, 'zh')
+  // 设置默认值：旧版本默认固定中文，现在默认自动跟随 DSH。
+  assert.equal(DEFAULTS.language, 'auto')
   assert.equal(normalizeLanguageSetting('zh'), 'zh')
   assert.equal(normalizeLanguageSetting('en'), 'en')
   assert.equal(normalizeLanguageSetting('auto'), 'auto')
+  // 非法/缺失 → 默认设置值 auto（而不是挑一个可能的语言）。
+  for (const value of [undefined, null, 'fr', 'EN', 42, {}, []]) {
+    assert.equal(normalizeLanguageSetting(value), 'auto')
+  }
 })
 
 test('hostLanguageKind：按主语言子标签归类，无法识别时返回 undefined', () => {
@@ -150,7 +159,7 @@ test('hostLanguageKind：按主语言子标签归类，无法识别时返回 und
   assert.equal(hostLanguageKind({}), undefined)
 })
 
-test('resolveLanguage：固定 zh / 固定 en / auto 跟随宿主 / 非法值回退 zh', () => {
+test('resolveLanguage：固定 zh / 固定 en / auto 跟随宿主 / 非法值按 auto 处理', () => {
   // 固定中文：无论宿主/DSH 是什么语言都显示中文。
   assert.equal(resolveLanguage('zh', 'en'), 'zh')
   assert.equal(resolveLanguage('zh', 'ja'), 'zh')
@@ -173,9 +182,11 @@ test('resolveLanguage：固定 zh / 固定 en / auto 跟随宿主 / 非法值回
   assert.equal(resolveLanguage('auto', null), 'zh')
   assert.equal(resolveLanguage('auto', ''), 'zh')
   assert.equal(resolveLanguage('auto', 42), 'zh')
-  // 非法 / 缺失设置值 → 默认中文（默认语言必须是中文）。
+  // 非法 / 缺失设置值 → 视为默认 auto（跟随 DSH）；宿主未知时回退中文。
   for (const setting of [undefined, null, 'fr', 'EN', 'AUTO', '', 0, true, {}, []]) {
-    assert.equal(resolveLanguage(setting, 'en'), 'zh', `设置值 ${JSON.stringify(setting)}`)
+    assert.equal(resolveLanguage(setting, 'en'), 'en', `设置值 ${JSON.stringify(setting)} 应跟随英文宿主`)
+    assert.equal(resolveLanguage(setting, 'zh'), 'zh', `设置值 ${JSON.stringify(setting)} 应跟随中文宿主`)
+    assert.equal(resolveLanguage(setting, undefined), 'zh')
   }
 })
 
@@ -296,6 +307,31 @@ test('语言设置与原创声明的文案键存在且中英齐全', () => {
   assert.equal(dicts.en['settings.languageEn'], 'English')
 })
 
+test('新增更新功能的中英文文案齐全且占位符一致', () => {
+  const updateKeys = Object.keys(dicts.zh).filter(key => key.startsWith('update.'))
+  assert.ok(updateKeys.length >= 20, `update.* 文案数量过少：${updateKeys.length}`)
+  for (const key of updateKeys) {
+    assert.ok(Object.prototype.hasOwnProperty.call(dicts.en, key), `en 缺 ${key}`)
+    const zhText = dicts.zh[key]
+    const enText = dicts.en[key]
+    assert.ok(typeof zhText === 'string' && zhText.trim() !== '', `zh.${key} 为空`)
+    assert.ok(typeof enText === 'string' && enText.trim() !== '', `en.${key} 为空`)
+    assert.notEqual(enText, zhText, `${key} 的英文与中文相同，疑似漏翻`)
+    const placeholders = text => [...String(text).matchAll(/\{([a-zA-Z0-9_]+)\}/g)].map(match => match[1]).sort()
+    assert.deepEqual(placeholders(enText), placeholders(zhText), `${key} 占位符不一致`)
+  }
+})
+
+test('全部字典：中英键集合与占位符完全一致', () => {
+  const zhKeys = Object.keys(dicts.zh).sort()
+  const enKeys = Object.keys(dicts.en).sort()
+  assert.deepEqual(enKeys, zhKeys, '中英字典键集合必须一致')
+  for (const key of zhKeys) {
+    const placeholders = text => [...String(text).matchAll(/\{([a-zA-Z0-9_]+)\}/g)].map(match => match[1]).sort()
+    assert.deepEqual(placeholders(dicts.en[key]), placeholders(dicts.zh[key]), `${key} 占位符不一致`)
+  }
+})
+
 test('原创声明覆盖需求中的全部要点（中文 + 英文）', () => {
   const repo = 'https://github.com/JanEickholt/dsh-inline-diff'
   const zh = translate(dicts, 'zh', 'originality.body', { repo })
@@ -316,65 +352,80 @@ test('原创声明覆盖需求中的全部要点（中文 + 英文）', () => {
  * 4. settings.js：language 设置的迁移、回退与持久化
  * ===================================================================== */
 
-test('settings：无存档时 language 默认为 zh 并写入 v4', async () => {
+test('settings：无存档时 language 默认为 auto（跟随 DSH）并写入 v5', async () => {
   await withFreshSettings({}, {}, ({ settings, storage }) => {
-    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().language, 'auto')
     const saved = JSON.parse(storage.getItem(STORAGE_KEY))
-    assert.equal(saved.language, 'zh')
+    assert.equal(saved.language, 'auto')
   })
 })
 
-test('settings：旧 v4 存档没有 language 字段 → 迁移为 zh', async () => {
-  await withFreshSettings(v4({ fileCards: 'native', syntaxHighlight: false }), {}, ({ settings, storage }) => {
-    assert.equal(settings.getSettings().language, 'zh')
-    assert.equal(settings.getSettings().fileCards, 'native')
-    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'zh')
-  })
-})
-
-test('settings：v3 旧存档迁移为 v4 并把 language 补成 zh', async () => {
-  const seed = { [LEGACY_KEY]: JSON.stringify({ fileCards: 'native', shellRows: 'enhanced' }) }
+test('settings：旧 v4 存档没有 language 字段 → 迁移为新默认 auto', async () => {
+  const seed = { [LEGACY_KEY]: JSON.stringify({ fileCards: 'native', syntaxHighlight: false }) }
   await withFreshSettings(seed, {}, ({ settings, storage }) => {
-    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().language, 'auto')
+    assert.equal(settings.getSettings().fileCards, 'native')
+    // 迁移后旧 v4 key 被清理，v5 落盘。
+    assert.equal(storage.getItem(LEGACY_KEY), null)
+    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'auto')
+  })
+})
+
+test('settings：v3 旧存档迁移为 v5 并把 language 补成 auto', async () => {
+  const seed = { [OLDER_KEY]: JSON.stringify({ fileCards: 'native', shellRows: 'enhanced' }) }
+  await withFreshSettings(seed, {}, ({ settings, storage }) => {
+    assert.equal(settings.getSettings().language, 'auto')
     assert.equal(settings.getSettings().shellRows, 'enhanced')
     // 迁移后旧 key 被清理，新 key 落盘。
-    assert.equal(storage.getItem(LEGACY_KEY), null)
-    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'zh')
-  })
-})
-
-test('settings：v2 旧存档迁移为 v4 并把 language 补成 zh', async () => {
-  const seed = { [OLDER_KEY]: JSON.stringify({ fileCards: 'enhanced' }) }
-  await withFreshSettings(seed, {}, ({ settings, storage }) => {
-    assert.equal(settings.getSettings().language, 'zh')
     assert.equal(storage.getItem(OLDER_KEY), null)
-    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'zh')
+    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'auto')
   })
 })
 
-test('settings：合法 language 值原样保留（zh / en / auto）', async () => {
+test('settings：v2 旧存档迁移为 v5 并把 language 补成 auto', async () => {
+  const seed = { [V2_KEY]: JSON.stringify({ fileCards: 'enhanced' }) }
+  await withFreshSettings(seed, {}, ({ settings, storage }) => {
+    assert.equal(settings.getSettings().language, 'auto')
+    assert.equal(storage.getItem(V2_KEY), null)
+    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'auto')
+  })
+})
+
+test('settings：明确选择过的语言原样保留；旧存档里的 zh 迁移到 auto', async () => {
+  // 新版会写 languageChosen=true；此时 zh / en / auto 都保留用户选择。
   for (const language of ['zh', 'en', 'auto']) {
-    await withFreshSettings(v4({ language }), {}, ({ settings }) => {
+    await withFreshSettings(archive({ language, languageChosen: true }), {}, ({ settings }) => {
       assert.equal(settings.getSettings().language, language)
+      assert.equal(settings.getSettings().languageChosen, true)
     })
   }
+  // 旧存档（没有 languageChosen）：zh 是旧默认值 → 迁移到 auto；en 是用户曾
+  // 主动选择 → 保留英文并补上标记。
+  await withFreshSettings(archive({ language: 'zh' }), {}, ({ settings }) => {
+    assert.equal(settings.getSettings().language, 'auto')
+  })
+  await withFreshSettings(archive({ language: 'en' }), {}, ({ settings, storage }) => {
+    assert.equal(settings.getSettings().language, 'en')
+    assert.equal(settings.getSettings().languageChosen, true)
+    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'en')
+  })
 })
 
-test('settings：非法 language 值（类型/枚举错误）一律回退 zh', async () => {
+test('settings：非法 language 值一律回退新默认 auto', async () => {
   const invalid = ['fr', 'EN', 'Auto', '', '  ', 42, 0, true, null, [], {}, ['zh']]
   for (const language of invalid) {
-    await withFreshSettings(v4({ language }), {}, ({ settings, storage }) => {
-      assert.equal(settings.getSettings().language, 'zh', `非法值 ${JSON.stringify(language)}`)
+    await withFreshSettings(archive({ language }), {}, ({ settings, storage }) => {
+      assert.equal(settings.getSettings().language, 'auto', `非法值 ${JSON.stringify(language)}`)
       // 回退结果同样落盘，下次加载不会再次踩到非法值。
-      assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'zh')
+      assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'auto')
     })
   }
 })
 
-test('settings：损坏 / 非对象存档 → 全部默认值（language 为 zh）', async () => {
+test('settings：损坏 / 非对象存档 → 全部默认值（language 为 auto）', async () => {
   for (const raw of ['{not json', '"text"', '42', 'null', 'true', '[1,2]']) {
     await withFreshSettings({ [STORAGE_KEY]: raw }, {}, ({ settings }) => {
-      assert.equal(settings.getSettings().language, 'zh', `存档 ${raw}`)
+      assert.equal(settings.getSettings().language, 'auto', `存档 ${raw}`)
     })
   }
 })
@@ -384,18 +435,18 @@ test('settings：超过 64 KiB 的原始存档在 JSON.parse 前被放弃并用�
   const oversized = JSON.stringify({ language: 'en' }).padEnd(70_000, ' ')
   assert.ok(oversized.length > 65536)
   await withFreshSettings({ [STORAGE_KEY]: oversized }, {}, ({ settings, storage }) => {
-    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().language, 'auto')
     assert.equal(settings.getSettings().fileCards, 'enhanced')
     // 坏存档已被本次启动的 persist() 用默认值覆盖成正常大小。
     const saved = storage.getItem(STORAGE_KEY)
     assert.ok(typeof saved === 'string' && saved.length < 4096, '坏存档应被覆盖')
-    assert.equal(JSON.parse(saved).language, 'zh')
+    assert.equal(JSON.parse(saved).language, 'auto')
   })
   // 旧 key 里的超大存档同样被放弃并清理。
   await withFreshSettings({ [LEGACY_KEY]: oversized }, {}, ({ settings, storage }) => {
-    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().language, 'auto')
     assert.equal(storage.getItem(LEGACY_KEY), null)
-    assert.ok(JSON.parse(storage.getItem(STORAGE_KEY)).language === 'zh')
+    assert.ok(JSON.parse(storage.getItem(STORAGE_KEY)).language === 'auto')
   })
 })
 
@@ -441,21 +492,21 @@ function fakeConfigForms(initial) {
 
 test('settings：previousTranscript 只接受 DSH transcriptView 白名单', async () => {
   // 非法存档值：恢复时回退 standard，绝不把任意字符串回传给 DSH 设置。
-  await withFreshSettings(v4({ transcript: 'enhanced', previousTranscript: 'hacked' }), {}, async ({ settings }) => {
+  await withFreshSettings(archive({ transcript: 'enhanced', previousTranscript: 'hacked' }), {}, async ({ settings }) => {
     const fake = fakeConfigForms('verbose')
     settings.initSettings(fake.service)
     await settings.setTranscriptPreference('native')
     assert.deepEqual(fake.writes.at(-1), { field: 'transcriptView', value: 'standard' })
   })
   // 合法旧值 normal → 恢复为当前名称 detailed。
-  await withFreshSettings(v4({ transcript: 'enhanced', previousTranscript: 'normal' }), {}, async ({ settings }) => {
+  await withFreshSettings(archive({ transcript: 'enhanced', previousTranscript: 'normal' }), {}, async ({ settings }) => {
     const fake = fakeConfigForms('verbose')
     settings.initSettings(fake.service)
     await settings.setTranscriptPreference('native')
     assert.deepEqual(fake.writes.at(-1), { field: 'transcriptView', value: 'detailed' })
   })
   // 合法当前值 compact 原样恢复。
-  await withFreshSettings(v4({ transcript: 'enhanced', previousTranscript: 'compact' }), {}, async ({ settings }) => {
+  await withFreshSettings(archive({ transcript: 'enhanced', previousTranscript: 'compact' }), {}, async ({ settings }) => {
     const fake = fakeConfigForms('verbose')
     settings.initSettings(fake.service)
     await settings.setTranscriptPreference('native')
@@ -463,7 +514,7 @@ test('settings：previousTranscript 只接受 DSH transcriptView 白名单', asy
   })
   // 切回 native 时只有 DSH 当前确实处于 verbose 才回写（不打扰用户自己的设置）。
   // 用 transcript:'native' 的存档避免 initSettings 触发 adopt（那会主动切到 flat）。
-  await withFreshSettings(v4({ transcript: 'native', previousTranscript: 'standard' }), {}, async ({ settings }) => {
+  await withFreshSettings(archive({ transcript: 'native', previousTranscript: 'standard' }), {}, async ({ settings }) => {
     const fake = fakeConfigForms('detailed')
     settings.initSettings(fake.service)
     await settings.setTranscriptPreference('native')
@@ -485,7 +536,7 @@ test('settings：开启 enhanced 时记录的 previousTranscript 也经过白名
 
 test('settings：localStorage 不可用时回退内存默认值且可继续切换', async () => {
   await withFreshSettings({}, { hasStorage: false }, ({ settings }) => {
-    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().language, 'auto')
     settings.updateSettings({ language: 'en' })
     assert.equal(settings.getSettings().language, 'en')
     // configForms 不可用（未初始化）也不能影响语言设置本身。
@@ -499,7 +550,7 @@ test('settings：localStorage 不可用时回退内存默认值且可继续切�
 test('settings：updateSettings 归一化非法 language 值并持久化', async () => {
   await withFreshSettings({}, {}, ({ settings, storage }) => {
     settings.updateSettings({ language: 'fr' })
-    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().language, 'auto')
     settings.updateSettings({ language: 'auto' })
     assert.equal(settings.getSettings().language, 'auto')
     assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'auto')
@@ -508,13 +559,28 @@ test('settings：updateSettings 归一化非法 language 值并持久化', async
   })
 })
 
-test('settings：resetSettings 把 language 恢复默认 zh', async () => {
-  await withFreshSettings(v4({ language: 'en', fileCards: 'native' }), {}, async ({ settings, storage }) => {
+test('settings：resetSettings 把 language 恢复默认 auto（跟随 DSH）', async () => {
+  await withFreshSettings(archive({ language: 'en', languageChosen: true, fileCards: 'native' }), {}, async ({ settings, storage }) => {
     assert.equal(settings.getSettings().language, 'en')
     await settings.resetSettings()
-    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().language, 'auto')
+    assert.equal(settings.getSettings().languageChosen, false)
     assert.equal(settings.getSettings().fileCards, 'enhanced')
-    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'zh')
+    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).language, 'auto')
+  })
+})
+
+test('settings：UI 显式选择 zh 后写 languageChosen，重新加载仍保留中文', async () => {
+  let snapshot
+  await withFreshSettings({}, {}, ({ settings, storage }) => {
+    settings.updateSettings({ language: 'zh' })
+    assert.equal(settings.getSettings().language, 'zh')
+    assert.equal(settings.getSettings().languageChosen, true)
+    assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).languageChosen, true)
+    snapshot = storage.dump()
+  })
+  await withFreshSettings(snapshot, {}, ({ settings }) => {
+    assert.equal(settings.getSettings().language, 'zh')
   })
 })
 
@@ -661,7 +727,7 @@ test('withPluginI18n：用插件语言替换宿主 t，且随语言设置切换'
   }
 })
 
-test('主 settings 实例：默认 language 为 zh 且状态可读', () => {
+test('主 settings 实例：显式 updateSettings 中文可读且状态一致', () => {
   const restore = setLocalStorage(undefined)
   try {
     updateSettings({ language: 'zh' })

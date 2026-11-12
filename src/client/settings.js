@@ -22,35 +22,50 @@
  *      默认值（随后 persist 会覆盖坏存档）；
  *   3. 单个字段类型/枚举非法 → 该字段回退默认值，其余字段照常迁移；
  *   4. 未知键、非法值在 updateSettings 中被忽略（language 例外：非法值按产品
- *      约定回退默认中文），避免外部调用把任意数据写进设置存档；
+ *      约定回退默认值 auto，即跟随 DSH），避免外部调用把任意数据写进设置存档；
  *   5. 写盘失败（隐私模式 / 配额满）只损失持久化，实时切换仍然生效；
  *   6. configForms 服务缺失/未连接时 transcript 相关操作静默降级（本地设置
  *      照常保存，页面不报错）。
  */
 
-import { DEFAULT_LANGUAGE, LANGUAGE_SETTINGS } from './locales.js'
+import { DEFAULT_LANGUAGE_SETTING, LANGUAGE_SETTINGS } from './locales.js'
+import { defaultEffects, normalizeEffects } from './surfaces.js'
 
-/** 当前存档 key（v4）。 */
-const STORAGE_KEY = 'dsh-inline-diff.settings.v4'
-/** 上一版存档 key：读入后迁移到 v4，下次 persist 时清理。 */
-const LEGACY_KEY = 'dsh-inline-diff.settings.v3'
-/** 更早的存档 key：同上。 */
-const OLDER_KEY = 'dsh-inline-diff.settings.v2'
-/** v1 早于中性模式命名（enhanced/native），不再读取，只在保存时删除。 */
-const RETIRED_KEY = 'dsh-inline-diff.settings.v1'
+/** 当前存档 key（v5：新增 effects 逐表面外观效果）。 */
+const STORAGE_KEY = 'dsh-inline-diff.settings.v5'
+/**
+ * 旧版存档 key（按新→旧顺序尝试读取；读入后迁移到 v5，下次 persist 清理）。
+ * v4 及更早没有 effects 字段，迁移后外观效果全部为 native（旧外观保持不变）。
+ */
+const LEGACY_KEYS = Object.freeze([
+  'dsh-inline-diff.settings.v4',
+  'dsh-inline-diff.settings.v3',
+  'dsh-inline-diff.settings.v2',
+])
+/** 更早的归档 key：v1 早于中性模式命名（enhanced/native），不再读取，只在保存时删除。 */
+const RETIRED_KEYS = Object.freeze(['dsh-inline-diff.settings.v1'])
 
 /** 全部显示选项。默认值保持：内联差异卡片、DSH 原生命令行、不改动用户已有的
  *  DSH 对话记录偏好。 */
 export const DEFAULTS = {
   /**
    * 插件级界面语言（1.3.0 新增）：
-   *   'zh'（默认）中文；'en' 英文；'auto' 跟随 DSH 全局语言（DSH 中文→中文，
-   *   其它语言→英文）。
+   *   'auto'（默认）跟随 DSH 全局语言（DSH 中文→中文，其它语言→英文）；
+   *   'zh' 固定中文；'en' 固定英文。
    * 这是插件自己的显示偏好，与 DSH 的全局 locale 相互独立：客户端文案从
    * src/client/locales.js 取字典，由插件语言选择；宿主渲染的 slot label 在
-   * 语言变化时重新注册。旧存档没有该字段，迁移为默认值 'zh'。
+   * 语言变化时重新注册。
+   * 默认值在 1.3.x 之后从固定中文改为 auto；旧存档若从未明确选择过语言，
+   * 迁移时也落到 auto（用户曾经明确选过的 zh/en 会保留，见 languageChosen）。
    */
-  language: DEFAULT_LANGUAGE,
+  language: DEFAULT_LANGUAGE_SETTING,
+  /**
+   * 内部字段：用户是否在设置页明确选择过语言。
+   * 旧版本没有该字段，因此无法区分“默认值 zh”和“用户手动选了 zh”；迁移时
+   * 把没有该标记的旧 zh 视为“从未选择”→ 迁移到新默认 auto。用户一旦在 UI
+   * 里切换语言（updateSettings 收到合法 language），该标记即置 true。
+   */
+  languageChosen: false,
   /** 'enhanced' = 内联差异卡片；'native' = DSH 原生文件修改行。 */
   fileCards: 'enhanced',
   /** 'enhanced' = 平铺展开的 Bash/PowerShell 行；'native' = DSH 原生行。 */
@@ -67,6 +82,13 @@ export const DEFAULTS = {
   fileInnerTone: 'auto',
   shellInnerTone: 'auto',
   toolInnerTone: 'auto',
+  /**
+   * 逐表面外观效果（1.4.0 新增）：
+   *   { [surfaceId]: { effect: 'native'|'glass'|'liquid', opacity, blur, mode } }
+   * 表面清单与归一化规则在 ./surfaces.js（唯一事实来源）。旧存档（v4 及更早）
+   * 没有该字段，迁移后全部为 native，即外观与旧版本完全一致。
+   */
+  effects: defaultEffects(),
   /** 差异代码的语法高亮开关（语言识别与配色见 languages.js / highlight.js）。 */
   syntaxHighlight: true,
   /** 语言徽章样式：'short' 短代码、'full' 全名、'hidden' 隐藏。 */
@@ -185,6 +207,9 @@ const SETTING_VALIDATORS = {
   fileInnerTone: enumGuard(INNER_TONE_VALUES),
   shellInnerTone: enumGuard(INNER_TONE_VALUES),
   toolInnerTone: enumGuard(INNER_TONE_VALUES),
+  // 逐表面外观效果：整份对象做归一化（未知表面丢弃、非法字段回退默认），
+  // 因此 updateSettings 收到 `{ effects: 任意值 }` 也只会写入合法配置。
+  effects: value => normalizeEffects(value),
   syntaxHighlight: value => (typeof value === 'boolean' ? value : undefined),
   languageBadge: enumGuard(LANGUAGE_BADGE_VALUES),
   unknownLanguage: enumGuard(UNKNOWN_LANGUAGE_VALUES),
@@ -262,11 +287,15 @@ function load() {
   try {
     const storage = globalThis.localStorage
     if (storage === undefined || storage === null) return { ...DEFAULTS }
-    // v4 是当前格式；v3/v2 按顺序读入迁移，下次 persist 时清理旧 key。
+    // v5 是当前格式；v4/v3/v2 按顺序尝试读入迁移，下次 persist 时清理旧 key。
     // v1 早于中性模式命名，不读取。
     let raw = storage.getItem(STORAGE_KEY)
-    if (typeof raw !== 'string' || raw === '') raw = storage.getItem(LEGACY_KEY)
-    if (typeof raw !== 'string' || raw === '') raw = storage.getItem(OLDER_KEY)
+    if (typeof raw !== 'string' || raw === '') {
+      for (const legacyKey of LEGACY_KEYS) {
+        raw = storage.getItem(legacyKey)
+        if (typeof raw === 'string' && raw !== '') break
+      }
+    }
     if (typeof raw !== 'string' || raw === '') return { ...DEFAULTS }
     // 解析前先做长度上界（安全审计 LOW-5）：损坏或被同源脚本写入的超大 JSON
     // 直接放弃并回退默认值；随后 `persist()` 会用默认值覆盖坏存档，旧 key 也会
@@ -275,10 +304,22 @@ function load() {
     const parsed = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { ...DEFAULTS }
     const next = { ...DEFAULTS }
-    // 插件界面语言。旧存档（1.3.0 之前）完全没有 language 字段，因此默认值
-    // 'zh' 自然生效；手改 JSON 或未来版本留下的非法值（类型错误、'fr'、'EN'、
-    // 42、null…）也一律回退 'zh'，保证插件不会用没有字典的语言渲染文案。
-    next.language = normalizeEnum(parsed.language, LANGUAGE_SETTINGS, DEFAULTS.language)
+    // 插件界面语言迁移（默认值已从固定 zh 改为 auto）：
+    //   - 用户明确选择过（languageChosen === true）→ 原样保留其选择；
+    //   - 旧存档里没有标记、值为 'en' → 说明用户曾主动选英文，保留 en；
+    //   - 旧存档里没有标记、值为 'zh'（旧默认）或缺失/非法 → 迁移到新默认 auto，
+    //     即“从未选择过”→ 跟随 DSH；非法值也不会挑到没有字典的语言。
+    const storedLanguage = normalizeEnum(parsed.language, LANGUAGE_SETTINGS, undefined)
+    if (parsed.languageChosen === true) {
+      next.language = storedLanguage ?? DEFAULTS.language
+      next.languageChosen = true
+    } else if (storedLanguage === 'en' || storedLanguage === 'auto') {
+      next.language = storedLanguage
+      next.languageChosen = true
+    } else {
+      next.language = DEFAULTS.language
+      next.languageChosen = false
+    }
     const fileCards = normalizeMode(parsed.fileCards)
     const shellRows = normalizeMode(parsed.shellRows)
     const toolCalls = normalizeMode(parsed.toolCalls)
@@ -293,6 +334,8 @@ function load() {
     if (parsed.fileInnerTone !== undefined) next.fileInnerTone = normalizeInnerTone(parsed.fileInnerTone)
     if (parsed.shellInnerTone !== undefined) next.shellInnerTone = normalizeInnerTone(parsed.shellInnerTone)
     if (parsed.toolInnerTone !== undefined) next.toolInnerTone = normalizeInnerTone(parsed.toolInnerTone)
+    // 逐表面外观效果：缺字段/坏数据都归一化成合法的 9 个表面配置（全 native 兜底）。
+    next.effects = normalizeEffects(parsed.effects)
     // 语法高亮相关选项：坏类型/坏枚举（旧存档、手改或残缺 JSON）一律回退文档
     // 默认值，而不是抛错。
     next.syntaxHighlight = normalizeBoolean(parsed.syntaxHighlight, DEFAULTS.syntaxHighlight)
@@ -321,9 +364,8 @@ function persist() {
       ...state,
       ...previousTranscript === undefined ? {} : { previousTranscript },
     }))
-    globalThis.localStorage?.removeItem(LEGACY_KEY)
-    globalThis.localStorage?.removeItem(OLDER_KEY)
-    globalThis.localStorage?.removeItem(RETIRED_KEY)
+    for (const legacyKey of LEGACY_KEYS) globalThis.localStorage?.removeItem(legacyKey)
+    for (const retiredKey of RETIRED_KEYS) globalThis.localStorage?.removeItem(retiredKey)
   } catch {
     // 写盘被拒只损失持久化；内存设置与实时切换仍然工作。
   }
@@ -366,6 +408,9 @@ export function updateSettings(patch) {
     if (value !== undefined) next[key] = value
   }
   if (Object.keys(next).length === 0) return
+  // 用户通过设置页/接口显式设置了 language：打上 languageChosen 标记，下次
+  // 加载时保留这个选择（不会被“旧默认值迁移到 auto”的规则覆盖）。
+  if (next.language !== undefined) next.languageChosen = true
   state = { ...state, ...next }
   persist()
   emit()

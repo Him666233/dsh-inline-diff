@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "node build.mjs --check",
-    "test": "node --test tests/diff.test.mjs tests/read-range.test.mjs tests/model.test.mjs tests/languages.test.mjs tests/highlight.test.mjs tests/syntax-palette.test.mjs tests/tool-status.test.mjs tests/locales.test.mjs tests/security.test.mjs",
+    "test": "node --test tests/diff.test.mjs tests/read-range.test.mjs tests/model.test.mjs tests/languages.test.mjs tests/highlight.test.mjs tests/syntax-palette.test.mjs tests/tool-status.test.mjs tests/locales.test.mjs tests/motion.test.mjs tests/surfaces.test.mjs tests/settings-effects.test.mjs tests/glass-filters.test.mjs tests/updates.test.mjs tests/security.test.mjs",
     "rename": "node scripts/set-package-name.mjs",
     "release": "node scripts/build-release.mjs"
   },
@@ -13,7 +13,7 @@
     "esbuild": "^0.28.2",
     "highlight.js": "^11.11.1"
   },
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Build workspace for the DSH Inline Diff plugin (inline diff cards, language detection, syntax highlighting).",
   "author": {
     "name": "Him666233",

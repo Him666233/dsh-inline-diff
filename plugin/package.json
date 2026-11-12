@@ -1,6 +1,6 @@
 {
   "name": "@him666233/dsh-inline-diff",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Inline diff cards for DSH: per-edit diffs, automatic file-language detection with syntax highlighting (red/green-safe palette), expanded command/generic/search/web rows, read ranges, and a side-by-side viewer. Works in desktop and Web UI profiles.",
   "type": "module",
   "icon": "icon.svg",

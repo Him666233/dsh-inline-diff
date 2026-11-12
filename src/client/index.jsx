@@ -35,6 +35,7 @@ import {
   SHELL_KEYS,
 } from './enhanced-tools.jsx'
 import { DiffModal, InlineDiffCard } from './components.jsx'
+import { installGlassRefraction } from './glass-filters.js'
 import {
   attachHostLocale,
   getPluginLanguage,
@@ -116,6 +117,9 @@ export function apply(ctx) {
     document.head.appendChild(style)
     return () => style.remove()
   }, 'dsh-inline-diff: syntax stylesheet')
+  // 液态玻璃的全局 SVG 折射滤镜 + 能力门控：整页只注入一次。没有它时
+  // styles.js 的液态玻璃会退化为「只有 blur + 高光」的降级形态，不会破相。
+  ctx.effect(() => installGlassRefraction(), 'dsh-inline-diff: glass refraction filters')
   console.info(`[dsh-inline-diff] client ${VERSION} · enhanced presentation`)
   // Read range 角标直接操作 DOM 而非 React 组件，所以传“按调用时插件语言翻译”
   // 的动态函数：新挂载的 Read 行角标一定用当前语言渲染。

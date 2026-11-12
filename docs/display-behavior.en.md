@@ -81,4 +81,24 @@ The dialog is sized `min(1440px, 96vw) × min(900px, 90vh)`, is mounted to `docu
 
 ## 9. Privacy
 
-- No network requests, no telemetry; snapshots are kept only briefly in Host memory and never persisted; settings are written only to the browser's `localStorage` and contain no file contents.
+- By default no network requests, no telemetry; snapshots are kept only briefly in Host memory and never persisted; settings are written only to the browser's `localStorage` and contain no file contents.
+- Exception: when the user explicitly clicks “Check for updates / Install”, the Host fetches npm registry metadata and invokes the local `dsh` CLI to install the plugin. Those requests contain only the package name/version — never session content, file content, keys or device information — and nothing runs in the background automatically.
+
+## 10. Motion
+
+Motion only serves “appearing” moments; there are no decorative loops:
+
+- **Running card entrance**: when a command/tool card mounts while still “preparing / running”, it plays a one-shot 200ms fade-in with a 4px rise; historical replay, settled cards, and calls that finish in milliseconds render their final state immediately with no animation.
+- **Output arrival**: when OUT switches from the “Running…” placeholder to real output, the OUT segment plays a one-shot 160ms fade-in with a 2px rise; re-renders that do not change status never replay it.
+- **Dialog open**: the settings and side-by-side dialogs fade the overlay in over 140ms and fade/scale/dialog-rise over 200ms.
+- **Performance and accessibility**: only opacity/transform are animated (no layout reflow); the easing is a strongly damped ease-out curve with no bounce, overshoot or exaggerated travel; everything is disabled under `prefers-reduced-motion: reduce`.
+- Animations affect only this plugin's own DOM, never DSH native rows, third-party themes or startup-animation plugins.
+
+## 11. Version & updates panel
+
+- The “Version & updates” section at the bottom of the settings panel shows the current version, current DSH version, a “Check for updates” button, every npm version (Latest / Installed / Deprecated / Unavailable, publish date) and an “Update to / Roll back to / Reinstall” button.
+- “Check for updates” is proxied by the Host to npm registry (60s cache, 12s timeout); external network is touched only on user action, and the payload contains only the package name and version numbers.
+- “Install” is available on Web profiles only: the Host reuses the existing same-origin/loopback admission, validates that the target version exists in the registry list and is installable, then serially invokes the official CLI (`dsh plugin --profile <name> add @him666233/dsh-inline-diff@<version>`; argv only, no shell, 240s timeout kills the process tree), and verifies the installed version in `node_modules` afterwards.
+- After installation you **must restart DSH** (restart `dsh web` for Web, restart the app for Desktop) to load the new version; a page refresh is not enough.
+- Desktop v1 follows the official “fully quit the desktop app before changing a desktop profile” rule, so it shows the version list plus a copyable command instead of an in-place one-click install.
+- Failure paths: nonexistent/unavailable/invalid versions are rejected before installing; when the CLI fails, the official installer rolls the profile back automatically and the panel shows the error code and log tail; only one install job may run at a time.

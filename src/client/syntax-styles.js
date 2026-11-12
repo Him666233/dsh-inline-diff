@@ -52,9 +52,15 @@ function paletteVars(palette) {
   return VARIABLE_GROUPS.map(group => `  --did-syn-${group}: ${palette[group]};`).join('\n')
 }
 
-/** 生成“选择器 { 调色板变量 }”块，用于按外观/内层配色重定向调色板。 */
-function paletteBlock(selector, palette) {
-  return `${selector} {\n${paletteVars(palette)}\n}`
+/**
+ * 生成“选择器 { 调色板变量 }”块，用于按外观/内层配色重定向调色板。
+ *
+ * segMix 是“行内改动片段上的 token 与前景色混合比例”：片段底色（增删色 30% 左右）
+ * 比整行底色深一层，纯 token 色在其上达不到 AA；与前景色混合后既保留色相区分，
+ * 又保证可读。深色调色板需要更高混合比例（往浅前景色靠），浅色相反。
+ */
+function paletteBlock(selector, palette, segMix) {
+  return `${selector} {\n${paletteVars(palette)}\n  --did-syn-seg-mix: ${segMix};\n}`
 }
 
 /**
@@ -104,6 +110,29 @@ const EMPHASIS_RULES = `
   font-style: inherit;
   text-decoration: inherit;
 }
+`.trim()
+
+/**
+ * 行内改动片段里的 token 规则：与 TOKEN_RULES 一一对应，但颜色用
+ * `color-mix(palette 色, 前景色)`，在片段底色上保持 AA 对比度。
+ * 用 currentColor 会引用父级颜色而不是分组色，所以这里逐组重写。
+ */
+const SEGMENT_RULES = `
+.did-seg[data-changed='true'] .did-tok[data-g='kw'],
+.did-seg[data-changed='true'] .did-tok[data-g='fn'],
+.did-seg[data-changed='true'] .did-tok[data-g='tag'],
+.did-seg[data-changed='true'] .did-tok[data-g='head'] { color: color-mix(in srgb, var(--did-syn-kw) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='str'],
+.did-seg[data-changed='true'] .did-tok[data-g='attr'],
+.did-seg[data-changed='true'] .did-tok[data-g='link'] { color: color-mix(in srgb, var(--did-syn-str) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='num'],
+.did-seg[data-changed='true'] .did-tok[data-g='lit'] { color: color-mix(in srgb, var(--did-syn-num) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='type'] { color: color-mix(in srgb, var(--did-syn-type) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='prop'] { color: color-mix(in srgb, var(--did-syn-prop) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='com'] { color: color-mix(in srgb, var(--did-syn-com) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='meta'] { color: color-mix(in srgb, var(--did-syn-meta) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='op'] { color: color-mix(in srgb, var(--did-syn-op) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='punct'] { color: color-mix(in srgb, var(--did-syn-punct) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
 `.trim()
 
 /**
@@ -161,18 +190,33 @@ export const SYNTAX_CSS = `
    这里的规则只改 token 文字颜色。
    调色板变量声明在 body 上，原因与 styles.js 相同：宿主主题把它的 token 声明
    在 body，声明在 :root 的 var() 解析不到那些 token（详见 styles.js）。 */
-${paletteBlock('body', SYNTAX_PALETTE.dark)}
+${paletteBlock('body', SYNTAX_PALETTE.dark, '55%')}
 /* 官方浅色外观（宿主设置）：浅色内层。 */
-${paletteBlock("body[data-dsh-inline-diff-appearance='light']", SYNTAX_PALETTE.light)}
+${paletteBlock("body[data-dsh-inline-diff-appearance='light']", SYNTAX_PALETTE.light, '50%')}
 /* 单卡片内部配色覆盖。'auto' 故意不写规则：跟随上面的文档级外观。 */
-${paletteBlock("[data-inner-tone='light']", SYNTAX_PALETTE.light)}
-${paletteBlock("[data-inner-tone='dark']", SYNTAX_PALETTE.dark)}
-/* “内层配色 = 跟随外壳”：代码底色即外壳表面，因此调色板跟随外壳配色。
-   外壳配色 'auto' 同样继承文档外观，所以不需要额外规则。 */
-${paletteBlock("[data-inner-tone='same'][data-shell-tone='light']", SYNTAX_PALETTE.light)}
-${paletteBlock("[data-inner-tone='same'][data-shell-tone='dark']", SYNTAX_PALETTE.dark)}
+${paletteBlock("[data-inner-tone='light']", SYNTAX_PALETTE.light, '50%')}
+${paletteBlock("[data-inner-tone='dark']", SYNTAX_PALETTE.dark, '55%')}
+/* “内层配色 = 跟随外壳”：代码底色即外壳表面，因此调色板跟随外壳配色。 */
+${paletteBlock("[data-inner-tone='same'][data-shell-tone='light']", SYNTAX_PALETTE.light, '50%')}
+${paletteBlock("[data-inner-tone='same'][data-shell-tone='dark']", SYNTAX_PALETTE.dark, '55%')}
+/* 当“代码底色”与当前外观相反（浅色外观里的深色内层，或强制深色外壳 + 内层
+   跟随外壳）时，词级改动片段的底色更深（或更浅），token 需要更多地向可读前景色
+   靠拢才能达到 AA。比例在下面的 SEGMENT 调色板块里按上下文覆盖。 */
+body[data-dsh-inline-diff-appearance='light'] [data-inner-tone='dark'],
+body[data-dsh-inline-diff-appearance='light'] [data-inner-tone='same'][data-shell-tone='dark'] {
+  --did-syn-seg-mix: 40%;
+}
+body[data-dsh-inline-diff-appearance='dark'] [data-inner-tone='light'],
+body[data-dsh-inline-diff-appearance='dark'] [data-inner-tone='same'][data-shell-tone='light'] {
+  --did-syn-seg-mix: 35%;
+}
 
 ${TOKEN_RULES}
+
+/* 行内词级改动片段：底色比整行深，token 与前景色混合后在浅/深外观下都能达到
+   AA。混色比例 --did-syn-seg-mix 由上面的调色板块按“深/浅代码底色”给出；
+   色相仍来自同一调色板，只是整体向可读前景色靠拢，不会变成红/绿语义色。 */
+${SEGMENT_RULES}
 
 ${EMPHASIS_RULES}
 

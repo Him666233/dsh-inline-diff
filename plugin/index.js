@@ -15,6 +15,8 @@
  *
  *        POST /dsh-inline-diff/api/snapshot  { sessionId, callId }
  *        POST /dsh-inline-diff/api/read      { cwd, path }
+ *        GET  /dsh-inline-diff/api/update/versions  版本列表/当前版本/安装方式
+ *        POST /dsh-inline-diff/api/update/install   { version } 安装/回退
  *        GET  /dsh-inline-diff/api/ping
  *
  *      读取路由永远不离开会话工作区（请求路径与解析后路径都做 realpath 包含
@@ -48,8 +50,11 @@
  *   - 捕获失败（结果畸形、事件被冻结、内存预算淘汰）→ 完全吞掉，绝不影响 Tool
  *     调用本身；快照缺失时历史回放会自动回退到文件读取/差异块。
  */
+import { spawn } from 'node:child_process'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** webServer 服务承载本插件的前缀路由（通过 inject 注入）。 */
 export const inject = ['webServer']
@@ -628,6 +633,337 @@ function captureSnapshot(exec, result) {
 }
 
 // ---------------------------------------------------------------------------
+// 版本与更新（设置页自带的检查更新 / 更新 / 回退）
+// ---------------------------------------------------------------------------
+
+/** npm 包名（本插件自身）。 */
+const UPDATE_PACKAGE = '@him666233/dsh-inline-diff'
+/** npm registry 的 packument 地址（斜杠需编码，@scope 用 %2F）。 */
+const REGISTRY_URL = 'https://registry.npmjs.org/@him666233%2Fdsh-inline-diff'
+const UPDATE_FETCH_TIMEOUT_MS = 12_000
+const UPDATE_CACHE_TTL_MS = 60_000
+const UPDATE_INSTALL_TIMEOUT_MS = 240_000
+const UPDATE_LOG_CAP = 16 * 1024
+const UPDATE_ERROR_TAIL_CAP = 4_000
+/** registry packument 响应上限：正常只有 ~10KB，2MB 足以覆盖且防止恶意超大响应撑内存。 */
+const REGISTRY_MAX_CHARS = 2 * 1024 * 1024
+/** 版本列表最多保留多少条（防止异常 packument 生成超大数组）。 */
+const REGISTRY_MAX_VERSIONS = 200
+/** profile 名白名单：只允许常见字符，防止被当成 CLI 选项或路径片段。 */
+const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/** registry 列表缓存（Host 进程级）。 */
+let updateCache = { at: 0, data: null }
+/** 同一进程内只允许一个安装任务（CLI 自身还有跨进程文件锁）。 */
+let updateBusy = false
+
+/** 本插件 Host 半区所在目录（读自己的 package.json 取当前版本）。 */
+function selfDir() {
+  return dirname(fileURLToPath(import.meta.url))
+}
+
+/** 安全读 JSON；缺失/损坏返回 null。 */
+async function readJsonSafe(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/** 当前已加载的插件版本（来自安装目录的 package.json）。 */
+async function currentPluginVersion() {
+  const manifest = await readJsonSafe(join(selfDir(), 'package.json'))
+  return typeof manifest?.version === 'string' ? manifest.version : null
+}
+
+/**
+ * 当前 profile 的上下文。优先用 DSH 文档化的 profileContext 服务；取不到时
+ * 回退解析 `--profile <name>` / DSH_PROFILE 环境变量（Web CLI 启动场景）。
+ */
+function profileContextOf(ctx) {
+  try {
+    const pc = typeof ctx?.get === 'function' ? ctx.get('profileContext') : undefined
+    if (pc !== null && typeof pc === 'object' && typeof pc.name === 'string' && PROFILE_NAME_PATTERN.test(pc.name)) return pc
+  } catch {
+    // 服务不可用：继续回退。
+  }
+  const argv = Array.isArray(process.argv) ? process.argv : []
+  let name = typeof process.env.DSH_PROFILE === 'string' ? process.env.DSH_PROFILE : null
+  for (let index = 0; index < argv.length - 1; index += 1) {
+    if (argv[index] === '--profile' && typeof argv[index + 1] === 'string') name = argv[index + 1]
+  }
+  if (name === null || name === '' || !PROFILE_NAME_PATTERN.test(name)) return null
+  const home = typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME !== ''
+    ? process.env.DSH_HOME
+    : join(homedir(), '.dsh')
+  return { name, dir: join(home, 'profiles', name) }
+}
+
+/** 是否运行在桌面 Electron 宿主里（桌面端 v1 只读展示 + 手动命令）。 */
+function isDesktopHost() {
+  return process.versions?.electron !== undefined
+    || (Array.isArray(process.argv) && process.argv.some(value => String(value).includes('dsh-desktop-host')))
+}
+
+/** semver 解析；非 semver 返回 null。 */
+function parseSemver(text) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(text).trim())
+  if (match === null) return null
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    pre: match[4] === undefined ? [] : match[4].split('.'),
+  }
+}
+
+/** semver 比较：a<b 返回负数，a==b 返回 0，a>b 返回正数（含 prerelease 规则）。 */
+function compareSemver(left, right) {
+  const a = parseSemver(left)
+  const b = parseSemver(right)
+  if (a === null || b === null) return 0
+  for (const key of ['major', 'minor', 'patch']) {
+    if (a[key] !== b[key]) return a[key] - b[key]
+  }
+  if (a.pre.length === 0 && b.pre.length === 0) return 0
+  if (a.pre.length === 0) return 1
+  if (b.pre.length === 0) return -1
+  const length = Math.max(a.pre.length, b.pre.length)
+  for (let index = 0; index < length; index += 1) {
+    const x = a.pre[index]
+    const y = b.pre[index]
+    if (x === undefined) return -1
+    if (y === undefined) return 1
+    const xn = /^\d+$/.test(x) ? Number(x) : null
+    const yn = /^\d+$/.test(y) ? Number(y) : null
+    if (xn !== null && yn !== null) {
+      if (xn !== yn) return xn - yn
+      continue
+    }
+    if (xn !== null) return -1
+    if (yn !== null) return 1
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+/** 把 registry packument 收窄成设置页可用的版本列表。 */
+function normalizeRegistry(document) {
+  const latest = typeof document?.['dist-tags']?.latest === 'string' ? document['dist-tags'].latest : null
+  const time = document?.time !== null && typeof document?.time === 'object' ? document.time : {}
+  const versions = []
+  for (const [version, meta] of Object.entries(document?.versions ?? {})) {
+    if (parseSemver(version) === null) continue
+    const hasBundle = meta?.dsh !== null && typeof meta?.dsh === 'object' && meta.dsh.bundle !== undefined && meta.dsh.bundle !== null
+    // 占位/坏包（例如 0.0.0-stage）没有 dsh.bundle 且 tarball 元数据损坏，安装会
+    // 在 pnpm 重试数分钟后失败：直接标记为不可安装，避免用户踩坑。
+    const stub = meta?.stub === true || !hasBundle
+    versions.push({
+      version,
+      publishedAt: typeof time[version] === 'string' ? time[version] : null,
+      latest: latest === version,
+      deprecated: typeof meta?.deprecated === 'string' ? meta.deprecated : null,
+      enginesDsh: typeof meta?.engines?.dsh === 'string' ? meta.engines.dsh : null,
+      bundleMissing: !hasBundle,
+      installable: !stub,
+    })
+  }
+  versions.sort((a, b) => compareSemver(b.version, a.version))
+  return { latest, versions: versions.slice(0, REGISTRY_MAX_VERSIONS) }
+}
+
+/** 拉取 npm registry 版本列表（带超时与 60s 缓存）。 */
+async function fetchRegistryVersions(force) {
+  if (force !== true && updateCache.data !== null && Date.now() - updateCache.at < UPDATE_CACHE_TTL_MS) {
+    return updateCache.data
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS)
+  try {
+    const response = await fetch(REGISTRY_URL, {
+      headers: { accept: 'application/json' },
+      signal: controller.signal,
+    })
+    if (!response.ok) throw new Error(`registry responded ${response.status}`)
+    // 先按 Content-Length 与正文长度双重限制，再 JSON.parse：即使 registry/代理
+    // 返回异常超大响应，也不会在 Host 进程里分配无界内存。
+    const declared = Number(response.headers.get('content-length') ?? '0')
+    if (Number.isFinite(declared) && declared > REGISTRY_MAX_CHARS) throw new Error('registry response too large')
+    const bodyText = await response.text()
+    if (bodyText.length > REGISTRY_MAX_CHARS) throw new Error('registry response too large')
+    let document
+    try {
+      document = JSON.parse(bodyText)
+    } catch {
+      throw new Error('registry response is not valid JSON')
+    }
+    if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+      throw new Error('registry response has unexpected shape')
+    }
+    const data = normalizeRegistry(document)
+    updateCache = { at: Date.now(), data }
+    return data
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 当前 profile 的安装方式：Web 可一键调用官方 CLI；桌面端降级为手动命令。 */
+function installerInfo(pc) {
+  const name = pc?.name ?? 'web'
+  const anchor = typeof pc?.installAnchor === 'string' ? pc.installAnchor : null
+  // installAnchor 必须是当前安装锚点里的 @deepseek-ai/dsh/package.json；否则视为
+  // 不可用（宁可降级为手动命令，也不从任意路径 spawn）。
+  const anchorLooksExpected = anchor !== null
+    && /[\\/]node_modules[\\/]@deepseek-ai[\\/]dsh[\\/]package\.json$/.test(anchor)
+  const cliRoot = anchorLooksExpected ? dirname(anchor) : null
+  const cliBin = cliRoot === null ? null : join(cliRoot, 'lib', 'bin.js')
+  const command = `dsh plugin --profile ${name} add ${UPDATE_PACKAGE}@<version>`
+  if (isDesktopHost()) {
+    return { mode: 'manual', platform: 'desktop', command, cliBin: null, reason: 'desktop-requires-exit' }
+  }
+  if (cliBin === null || !isAbsolute(cliBin)) {
+    return { mode: 'manual', platform: 'web', command, cliBin: null, reason: 'cli-not-found' }
+  }
+  return { mode: 'cli', platform: 'web', command, cliBin, reason: null }
+}
+
+/** 读取 profile 里已安装的插件版本；读不到返回 null。 */
+async function installedVersionAt(pc) {
+  if (pc === null || typeof pc.dir !== 'string') return null
+  const manifest = await readJsonSafe(join(pc.dir, 'node_modules', UPDATE_PACKAGE, 'package.json'))
+  return typeof manifest?.version === 'string' ? manifest.version : null
+}
+
+/** 读取 profile 绑定的 DSH 版本（installAnchor 指向 @deepseek-ai/dsh/package.json）。 */
+async function dshVersionAt(pc) {
+  if (pc === null || typeof pc.installAnchor !== 'string') return null
+  const manifest = await readJsonSafe(pc.installAnchor)
+  return typeof manifest?.version === 'string' ? manifest.version : null
+}
+
+/** 在子进程里跑官方 CLI 的 plugin add；返回结构化结果（含日志尾部）。 */
+function runPluginInstall(pc, version, installer) {
+  return new Promise((resolveResult) => {
+    const spec = `${UPDATE_PACKAGE}@${version}`
+    const command = `dsh plugin --profile ${pc.name} add ${spec}`
+    const args = [installer.cliBin, 'plugin', '--profile', pc.name, 'add', spec]
+    if (typeof installer.cliBin !== 'string' || !isAbsolute(installer.cliBin) || !PROFILE_NAME_PATTERN.test(pc.name)) {
+      resolveResult({ ok: false, code: 'installer-unavailable', command })
+      return
+    }
+    let child
+    try {
+      child = spawn(process.execPath, args, {
+        cwd: typeof pc.dir === 'string' && isAbsolute(pc.dir) ? pc.dir : process.cwd(),
+        windowsHide: true,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      resolveResult({ ok: false, code: 'spawn-failed', command, logTail: String(error?.message ?? '') })
+      return
+    }
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveResult({ ...result, command })
+    }
+    child.stdout?.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-UPDATE_LOG_CAP) })
+    child.stderr?.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-UPDATE_LOG_CAP) })
+    child.on('error', (error) => finish({ ok: false, code: 'spawn-failed', logTail: String(error?.message ?? '') }))
+    child.on('close', (code) => {
+      const logTail = (stderr + stdout).slice(-UPDATE_ERROR_TAIL_CAP)
+      finish({ ok: code === 0, code: code === 0 ? 'ok' : `exit-${code}`, exitCode: code, logTail })
+    })
+    const timer = setTimeout(() => {
+      try {
+        if (process.platform === 'win32') {
+          // npm/pnpm 会拉起子进程树：只 kill 父进程会留下孤儿，因此用 taskkill /T。
+          spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }).on('error', () => {})
+        } else {
+          child.kill('SIGKILL')
+        }
+      } catch {
+        // 尽力而为：超时返回状态仍然明确。
+      }
+      finish({ ok: false, code: 'timeout', logTail: (stderr + stdout).slice(-UPDATE_ERROR_TAIL_CAP) })
+    }, UPDATE_INSTALL_TIMEOUT_MS)
+  })
+}
+
+/** GET /update/versions 的响应体。 */
+async function updateVersionsPayload(ctx, force) {
+  const pc = profileContextOf(ctx)
+  const [current, registry, dshVersion] = await Promise.all([
+    currentPluginVersion(),
+    fetchRegistryVersions(force),
+    dshVersionAt(pc),
+  ])
+  const installed = await installedVersionAt(pc)
+  const installer = installerInfo(pc)
+  return {
+    ok: true,
+    current: installed ?? current,
+    loaded: current,
+    dshVersion,
+    latest: registry.latest,
+    // 只回传 profile 名称：绝对路径属于本机信息，UI 也不需要，避免不必要地暴露。
+    profile: pc === null ? null : { name: pc.name },
+    installer,
+    versions: registry.versions,
+  }
+}
+
+/** POST /update/install 的核心：校验版本 → 跑 CLI → 复核安装结果。 */
+async function performUpdate(ctx, body) {
+  const version = body?.version
+  if (typeof version !== 'string' || version.length > 100 || parseSemver(version) === null) {
+    return { status: 400, payload: { ok: false, code: 'invalid-version' } }
+  }
+  const pc = profileContextOf(ctx)
+  if (pc === null) return { status: 400, payload: { ok: false, code: 'profile-unknown' } }
+  const installer = installerInfo(pc)
+  if (installer.mode !== 'cli') {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        code: installer.reason ?? 'manual-required',
+        command: `${installer.command.replace('@<version>', `@${version}`)}`,
+      },
+    }
+  }
+  const registry = await fetchRegistryVersions(false)
+  const entry = registry.versions.find(item => item.version === version)
+  if (entry === undefined) return { status: 400, payload: { ok: false, code: 'version-not-found' } }
+  if (entry.installable !== true) return { status: 400, payload: { ok: false, code: 'version-not-installable' } }
+  if (updateBusy) return { status: 409, payload: { ok: false, code: 'busy' } }
+  updateBusy = true
+  try {
+    const result = await runPluginInstall(pc, version, installer)
+    if (!result.ok) return { status: 200, payload: { ok: false, code: result.code, logTail: result.logTail, command: result.command } }
+    const installed = await installedVersionAt(pc)
+    if (installed !== version) {
+      return { status: 200, payload: { ok: false, code: 'verify-failed', installedVersion: installed, logTail: result.logTail, command: result.command } }
+    }
+    // 安装成功：下次进程启动才加载新代码，因此必须提示重启（页面刷新不够）。
+    updateCache = { at: 0, data: null }
+    return {
+      status: 200,
+      payload: { ok: true, installedVersion: installed, restartRequired: true, logTail: result.logTail, command: result.command },
+    }
+  } finally {
+    updateBusy = false
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 路由处理
 // ---------------------------------------------------------------------------
 
@@ -648,13 +984,22 @@ async function handleRequest(ctx, req, res) {
       respond(res, 200, { ok: true, snapshots: snapshots.size })
       return
     }
+    if (req.method === 'GET' && route === API_PREFIX + '/update/versions') {
+      const refresh = /[?&]refresh=1(?:&|$)/.test(String(req?.url ?? ''))
+      try {
+        respond(res, 200, await updateVersionsPayload(ctx, refresh))
+      } catch {
+        respond(res, 200, { ok: false, code: 'registry-unreachable' })
+      }
+      return
+    }
     if (req.method !== 'POST') {
       fail(res, 405, 'POST only')
       return
     }
     // 2. 先认 action 再读 body：未知路径不消耗解析预算。
     const action = actionOf(route)
-    if (action !== 'snapshot' && action !== 'read') {
+    if (action !== 'snapshot' && action !== 'read' && action !== 'update/install') {
       fail(res, 404, 'unknown action')
       return
     }
@@ -665,6 +1010,11 @@ async function handleRequest(ctx, req, res) {
       return
     }
     const body = await readJsonBody(req, res)
+    if (action === 'update/install') {
+      const result = await performUpdate(ctx, body)
+      respond(res, result.status, result.payload)
+      return
+    }
     if (action === 'snapshot') {
       const sessionId = body.sessionId
       const rawCallId = body.callId

@@ -18,9 +18,11 @@
  *   - 元数据残缺（meta 非对象/数字非有限）→ 徽标为空，摘要按可用参数降级；
  *   - 未知工具名 → 标题回退为原始 wire name（或字典里的“工具”）。
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { contentText, deriveCall, firstLine, stateKeyOf } from './model.js'
-import { pulsePhase } from './motion.js'
+import { isLiveToolState, pulsePhase } from './motion.js'
+import { fxRootProps, surfaceProps } from './surfaces.js'
+import { usePulseSync } from './use-pulse-sync.js'
 import { sectionStates } from './tool-status.js'
 import { useSettingsSnapshot } from './use-settings.js'
 
@@ -197,11 +199,20 @@ export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
   const tone = useSettingsSnapshot()
   const model = useMemo(() => genericModel(block, toolName, t), [block, toolName, t])
   const [open, setOpen] = useState(true)
+  // 入场动画只给“运行中/准备中”挂载的卡片；历史回放/极快调用直接显示终态。
+  const [enter] = useState(() => isLiveToolState(model.state))
+  // 输出占位（“执行中…”）切换到真实输出时，让 OUT 段轻微淡入一次。
+  const waitingRef = useRef(model.waitingForOutput)
+  const outputAppeared = useRef(false)
+  if (model.output !== '' && waitingRef.current) outputAppeared.current = true
+  waitingRef.current = model.waitingForOutput
+  // 卡片根 ref：把卡内呼吸动画对齐到同一相位（圆点与 IN/OUT 状态条同时亮）。
+  const pulseRef = usePulseSync()
   const stateLabel = stateKeyOf(model.state)
   const hasBody = model.input !== '' || model.output !== ''
   return (
-    <div className="enhanced-tool enhanced-generic" data-variant="tool" data-kind={model.kind} data-state={model.state} data-tool={toolName} data-shell-tone={tone.toolShellTone} data-inner-tone={tone.toolInnerTone} data-body={hasBody && open ? 'true' : 'false'} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
-      <div className="enhanced-head">
+    <div className="enhanced-tool enhanced-generic" ref={pulseRef} {...fxRootProps(tone, ['toolHeader', 'toolIO'])} data-variant="tool" data-kind={model.kind} data-state={model.state} data-tool={toolName} data-shell-tone={tone.toolShellTone} data-inner-tone={tone.toolInnerTone} data-body={hasBody && open ? 'true' : 'false'} data-enter={enter ? '' : undefined} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
+      <div className="enhanced-head" {...surfaceProps(tone, 'toolHeader')}>
         <span className="enhanced-kind"><KindIcon kind={model.kind} /></span>
         {hasBody ? (
           <button
@@ -229,7 +240,7 @@ export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
         </span>
       </div>
       {open && hasBody ? (
-        <div className="enhanced-io">
+        <div className="enhanced-io" {...surfaceProps(tone, 'toolIO')}>
           {model.input !== '' ? (
             <div className="enhanced-section" data-section="in" data-state={model.inputState}>
               <span className="enhanced-label">{t('tool.in')}</span>
@@ -240,7 +251,7 @@ export function EnhancedExpandedTool({ block, toolName, t, inspect }) {
           ) : null}
           {model.input !== '' && model.output !== '' ? <div className="enhanced-divider" aria-hidden="true" /> : null}
           {model.output !== '' ? (
-            <div className="enhanced-section" data-section="out" data-state={model.outputState}>
+            <div className="enhanced-section" data-section="out" data-state={model.outputState} data-appear={outputAppeared.current ? '' : undefined}>
               <span className="enhanced-label">{t('tool.out')}</span>
               <div className="enhanced-scroll">
                 <pre className="enhanced-code" data-error={model.outputState === 'error' ? '' : undefined}>{model.output}</pre>

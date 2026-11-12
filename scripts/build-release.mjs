@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 打包 1.3.0 发行版（GitHub Release 附件）。
+ * 打包当前版本发行版（GitHub Release 附件）；版本号从 plugin/package.json 读取。
  *
  * 用法（仓库根目录）：
  *   node scripts/build-release.mjs

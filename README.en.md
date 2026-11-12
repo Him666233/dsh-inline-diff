@@ -4,7 +4,7 @@
 
 > **Originality notice (important)**: This project is **an entirely original work**. It has **no relationship whatsoever** with [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff) **or any other plugin, repository, or project with the same or a similar name**. This project did not reference, copy, or port any of those projects; the implementation approach, module split, code organization, and final rendering are completely different. Any similarity in part of the functionality (inline diff display in conversations) is **coincidental** — this project only discovered the same-named/similar project when searching for similar plugins after the implementation was already complete. This project is **not** a derivative work, a re-creation, or a fork of any other project; please do not mix them up or confuse them. The Chinese version of this statement is in [README.md](README.md).
 
-Renders an expandable diff card in place for every file change in the [DeepSeek Harness](https://github.com/deepseek-ai) conversation stream, with side-by-side comparison, inline character-level highlighting, moved-block / passive line-number annotations, and read-range display; since 1.1.0 it also detects the language of the modified file, showing a language badge and language-aware syntax highlighting in the inline card and the expanded dialog (the palette deliberately avoids red and green so it never competes with added/removed markers); since 1.2.0 command and tool cards express input and output status with two independent IN/OUT bars; since 1.2.5 the gutter carries an OLD / NEW legend, and the expanded dialog's notice banner and the settings dialog's title bar stay fixed; since 1.2.6 shell and dialog colors strictly follow the active theme (official stock themes and third-party skins alike); **since 1.3.0 the plugin provides a complete bilingual Chinese/English UI and documentation, with an independent language switch on the settings page (Chinese by default)**. Command, search, web, and generic tool calls can also switch to the expanded style with IN/OUT open by default.
+Renders an expandable diff card in place for every file change in the [DeepSeek Harness](https://github.com/deepseek-ai) conversation stream, with side-by-side comparison, inline character-level highlighting, moved-block / passive line-number annotations, and read-range display; since 1.1.0 it also detects the language of the modified file, showing a language badge and language-aware syntax highlighting in the inline card and the expanded dialog (the palette deliberately avoids red and green so it never competes with added/removed markers); since 1.2.0 command and tool cards express input and output status with two independent IN/OUT bars; since 1.2.5 the gutter carries an OLD / NEW legend, and the expanded dialog's notice banner and the settings dialog's title bar stay fixed; since 1.2.6 shell and dialog colors strictly follow the active theme (official stock themes and third-party skins alike); **since 1.3.0 the plugin provides a complete bilingual Chinese/English UI and documentation, with an independent language switch on the settings page; since 1.4.0 the default is “Follow DSH”, and the release adds card/dialog motion plus a built-in version check, update and rollback panel in the settings page**. Command, search, web, and generic tool calls can also switch to the expanded style with IN/OUT open by default.
 
 **Author**: [Him666233](https://github.com/Him666233) · **Repository**: [Him666233/dsh-inline-diff](https://github.com/Him666233/dsh-inline-diff) · **npm**: [`@him666233/dsh-inline-diff`](https://www.npmjs.com/package/@him666233/dsh-inline-diff) · **License**: [MIT](LICENSE)
 
@@ -87,6 +87,8 @@ The plugin reads the light/dark appearance the host actually resolves: in light 
 - **Compact gutter**: the gutter is narrowed and its content and border padding reduced, so code starts further left; the full-line backgrounds and left color bars of added/removed lines still run all the way to the card/dialog edge.
 - **Read range surfaced**: a collapsed Read row shows `L x – L y` (single line `L x`, unknown end `from L x`, disjoint ranges separated by ` · `, at most 4 segments then `…`); it hides automatically when expanded and never overrides DSH's native presentation.
 - **Four display options**: file-change cards, command rows, and other tool calls can use “Expanded style / DSH native”; process folding can use “Unfolded / DSH native”.
+- **Entrance and output motion (new in 1.4.0)**: a running command/tool card fades in with a 4px rise over 200ms; when the “Running…” placeholder is replaced by real OUT content, the output fades in over 160ms; the settings and side-by-side dialogs fade in with a subtle rise/scale. Only “appearing” moments animate — historical replay, already-settled fast calls and status-preserving re-renders stay instant, so nothing animates just for the sake of animation. The easing is a strongly damped ease-out curve with no bounce or exaggerated travel, and everything is disabled when the OS “reduce motion” preference is on.
+- **Built-in update and rollback panel (new in 1.4.0)**: the “Version & updates” section at the bottom of the settings panel lists every npm version (sorted descending, with Latest / Installed / Deprecated / Unavailable badges, publish dates and the current DSH version); pick any version to update, roll back or reinstall. On the Web side the Host runs the official `dsh plugin --profile <profile> add @him666233/dsh-inline-diff@<version>` command; failures roll back automatically via the CLI and show the error code plus log tail, while success tells you to restart DSH. Desktop v1 follows the official “quit the desktop app before changing a profile” rule and shows the version list plus a copyable command.
 - **Command rows**: `bash` / `pwsh` / `win_bash` use a terminal icon, monospace title, and terminal-like layout; the header shows the status and non-zero exit code; IN/OUT scroll independently (IN has a shorter max height) and the scrollbars hug the card's right edge.
 - **Search and web tool rows**: `grep` / `glob` / `web_search` / `web_fetch` also join “Other tool calls” in expanded style, showing a category icon, a keyword/path/URL summary, match/file/source/HTTP-status badges, and IN/OUT open by default.
 - **Per-tool row differentiation**: command rows use a terminal icon, monospace title, and green accent; search tools use a magnifier icon and web tools a globe icon; generic tool calls carry a “Tool call” label. All expanded-style tool rows share the same “Trace” pill button as inline diff cards.
@@ -105,12 +107,12 @@ The plugin reads the light/dark appearance the host actually resolves: in light 
 | Environment | Support |
 | --- | --- |
 | DSH desktop (Desktop profile) | ✅ Verified |
-| DSH Web UI (Web profile) | ✅ Code-compatible; the plugin must be installed separately in that profile |
+| DSH Web UI (Web profile) | ✅ Verified (DSH 0.2.2-rc.2); the plugin must be installed separately in that profile |
 | Browser / Electron embedded WebView | ✅ The client uses standard Web platform APIs |
 | Third-party themes / desktop pets / skins | ✅ Colors follow theme tokens; themes that intercept and replay clicks to fold (e.g. claude-style) are handled: card headers carry an `aria-haspopup` exemption and only respond to real user gestures; themes and desktop pets are external plugins and do not affect installing this plugin |
 | Startup-animation plugins (custom intro animations, etc.) | ✅ They do not take over each other's slots; animation keyframes and styles use the plugin namespace (`dsh-inline-diff-*`); the Read range observer only reacts to Read-row-related changes |
 
-**DSH version range (`engines.dsh`)**: `>=0.2.2-rc.1 <0.3.0`. The current version has been verified against DeepSeek Harness `0.2.2-rc.1` (desktop profile).
+**DSH version range (`engines.dsh`)**: `>=0.2.2-rc.1 <0.3.0`. The current version has been verified against DeepSeek Harness `0.2.2-rc.1` (desktop profile) and `0.2.2-rc.2` (Web profile: plugin loading, snapshots, syntax highlighting, themes/appearance, settings and the update panel); the `engines.dsh` range is unchanged.
 
 The plugin declares `engines.dsh` in `plugin/package.json`; DSH's plugin loader validates that range and **refuses to auto-load the plugin when it is out of range**, so an unverified host version is never treated as a usable environment. The plugin manifest also declares `dsh.client.platform: web`; the Host side only uses the generic `webServer`, `tools/result`, and Node.js file-reading capabilities, and does not depend on Electron or desktop-only APIs.
 
@@ -182,7 +184,7 @@ Restart DSH for it to take effect. If the desktop app and the Web UI use differe
 
 ### Interface language and documentation language
 
-- **Interface language**: since 1.3.0 you can choose “中文 (default) / English / Follow DSH” on the plugin settings page; the change takes effect immediately without a refresh. The default is Chinese, and DSH's global language setting is never modified.
+- **Interface language**: choose “中文 / English / **Follow DSH (default)**” on the plugin settings page; the change takes effect immediately without a refresh, and DSH's global language setting is never modified. Since 1.4.0 the default is “Follow DSH” (Chinese when DSH is Chinese, English for other host languages). Old archives that never explicitly picked a language migrate once to “Follow DSH”; explicitly chosen Chinese/English is preserved (pick Chinese again to pin it).
 - **Documentation language**: Chinese is the primary documentation ([README.md](README.md)), and the English documentation is in this file ([README.en.md](README.en.md)); the npm package ships both `README.md` and `README.en.md`.
 
 ### Building from source
@@ -191,7 +193,7 @@ Restart DSH for it to take effect. If the desktop app and the Web UI use differe
 npm install
 npm run build      # -> plugin/client.js + plugin/cordis.patch.yml (package name read from plugin/package.json)
 npm run check      # syntax / JSON validation, plus checks that the committed client.js and cordis.patch.yml match the source and package name
-npm test           # unit tests for the diff engine, card model, language detection, highlight palette, tool status, read range, i18n, and security regressions (124 tests)
+npm test           # unit tests for the diff engine, card model, language detection, highlight palette, tool status, read range, i18n, version updates, and security regressions (164 tests)
 ```
 
 Node.js 20+ is required; the build-time dependencies are `esbuild` and `highlight.js` (syntax modules are bundled into `client.js`). The plugin has no runtime dependencies beyond React and the Web services provided by the host.
@@ -223,11 +225,20 @@ After setting **Command rows** and/or **Other tool calls** to **Expanded**:
 
 ### Settings
 
-**UI language (new in 1.3.0, independent of DSH's global language)**:
+**UI language (new in 1.3.0; Follow DSH is the default since 1.4.0; independent of DSH's global language)**:
 
 | Setting | Options | Description |
 | --- | --- | --- |
-| Language | 中文 (default) / English / Follow DSH | The language of the plugin's own UI. The default is **中文**; “Follow DSH” follows DSH's global language setting. The switch takes effect immediately without a refresh, never modifies DSH's global language, and does not affect other plugins. Documentation language: Chinese is the default ([README.md](README.md)), and English is in this file ([README.en.md](README.en.md)). |
+| Language | 中文 / English / **Follow DSH (default)** | The language of the plugin's own UI. The default is **Follow DSH**: Chinese when DSH is Chinese, English for other host languages (English is used when no dictionary matches). The switch takes effect immediately without a refresh, never modifies DSH's global language, and does not affect other plugins. Documentation language: Chinese is the default ([README.md](README.md)), and English is in this file ([README.en.md](README.en.md)). |
+
+**Version & updates (new in 1.4.0)**:
+
+| Action | Description |
+| --- | --- |
+| Check for updates | The Host proxies npm registry requests (60s cache) and lists every published version, showing the current version, DSH version and latest version at a glance. |
+| Pick a version | The action button becomes “Update to vX” (higher), “Roll back to vX” (lower) or “Reinstall vX” (same); deprecated/unavailable versions (such as stub packages) are disabled. |
+| Install | On Web, the official plugin-install command runs with an in-process mutex, version allow-list validation and a 240s timeout; on failure the CLI rolls back and the log is shown, and on success you are told to **restart DSH** (a page refresh is not enough). On Desktop a copyable command is shown and DSH must be fully quit first. |
+| Caveat | Updating/rolling back changes only the plugin installation of the current profile; a one-click install replaces the current installation with the npm release, so avoid it when you need to keep a local dev build. Unpublished versions are never listed. |
 
 > The top of the settings page also shows a prominent **originality notice**: this project is a fully original work and has no relationship with any same-named/similar plugin (including [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff)); see the statement at the top of this document for details.
 
@@ -256,7 +267,7 @@ Settings entry points:
 - Bottom of the sidebar: **Diff style** (opens the same settings dialog);
 - DSH settings page: **Inline Diff** (the settings panel is titled “Inline Diff · Display”).
 
-Settings are saved in the browser's `localStorage` (key `dsh-inline-diff.settings.v4`; the new `language` field is migrated to `zh` when an old value has none); old `v3` / `v2` values are migrated to the new format on first load and the old keys are removed (the old `v1` key is also cleaned up on save). The process-folding option is written through DSH's official `configForms` service and can be restored at any time. **Reset to defaults** restores all options and DSH's transcript preference to their defaults; if **Other tool calls** changes as a result, the page refreshes once automatically to apply it.
+Settings are saved in the browser's `localStorage` (key `dsh-inline-diff.settings.v5`); old `v4` / `v3` / `v2` values are migrated to the new format on first load and the old keys are removed (the old `v1` key is also cleaned up on save). The default UI language is “Follow DSH”; archives that never explicitly picked a language migrate once to Follow DSH, while explicit choices are preserved. The process-folding option is written through DSH's official `configForms` service and can be restored at any time. **Reset to defaults** restores all options and DSH's transcript preference to their defaults; if **Other tool calls** changes as a result, the page refreshes once automatically to apply it.
 
 ### Read range
 
@@ -285,9 +296,10 @@ dsh-inline-diff/
 │  ├─ settings.js              # settings storage, migration, defaults, and DSH preference linkage
 │  ├─ settings-ui.jsx          # settings page / dialog (including language switch and originality notice)
 │  ├─ styles.js                # theme tokens and card/dialog styles
+│  ├─                # version/update pure logic (semver, version rows, action labels)
 │  └─ api.js / store.js        # host communication / dialog state
 ├─ plugin/                     # installable plugin package (Host + built client.js + locale + icon)
-│  ├─ index.js                 # Host half: snapshot LRU and read-only file APIs
+│  ├─ index.js                 # Host half: snapshot LRU, read-only file APIs and version-update APIs
 │  ├─ client.js                # build output (do not edit by hand; generated by build.mjs)
 │  ├─ cordis.patch.yml         # build output (bundle plugin line, package name written automatically)
 │  ├─ package.json             # npm package manifest (dsh.bundle.patch / engines.dsh / dsh.client)
@@ -318,12 +330,14 @@ For display details of inline cards, the expanded dialog, and the settings dialo
 ### Host side
 
 - Listens on `tools/result`, captures `{ path, before, after, operation }` for successful `edit` / `write` calls, and stores them as **in-memory** snapshots keyed by “session + call ID” (LRU: at most 240 entries, 4 MB of text per side, plus an additional **64 MB total** cap; when any budget is exceeded the oldest entries are evicted; oversized writes are not snapshotted and their cards fall back to changed-hunk mode);
-- Provides **read-only** APIs; every route (including `/ping`, 404, and 405) first passes the browser trust-boundary check:
+- Provides **read-only display APIs plus a restricted version-update API**; every route (including `/ping`, 404, and 405) first passes the browser trust-boundary check:
   - admission first reuses the DSH `connection` service's `admit(req)` (the official host / origin / cross-site fence plus an HttpOnly, SameSite=Strict browser session cookie);
   - embedded profiles without a `connection` service fall back to a local fence: `Host` must be loopback or the listener's bound address, `Origin` must be same-authority, and `sec-fetch-site: cross-site` is rejected; any exception **never fail-opens**;
   - `POST /dsh-inline-diff/api/snapshot`: returns a snapshot by `sessionId + callId`;
   - `POST /dsh-inline-diff/api/read`: reads a file inside the root directory supplied by the requester (two-layer realpath containment; 2 MB per file; 15-second read timeout; at most 8 concurrent reads, returning 429/504 beyond that; binary files return `binary`, and the UTF-8 BOM is stripped);
   - `GET /dsh-inline-diff/api/ping`: health check (returns the current snapshot count), equally protected by admission (the browser profile requires the session cookie);
+  - `GET /dsh-inline-diff/api/update/versions`: reads npm version metadata for `@him666233/dsh-inline-diff` (registry packument, 60s Host cache, 12s timeout) and returns the installed version, DSH version, installer mode and all versions; external network is touched only when the user clicks “Check for updates”;
+  - `POST /dsh-inline-diff/api/update/install`: validates that the target version exists in the registry list and is installable, then serially spawns the official `dsh plugin --profile <name> add <pkg>@<version>` command (argv only, no shell; 240s timeout kills the process tree) and verifies the installed version afterwards; available on Web, while Desktop returns a copyable degraded command;
 - `POST` request bodies are capped at 1 MB, accept only `application/json`, and have a 10-second read timeout (413 / 415 / 408 beyond that); responses consistently carry `nosniff` / `no-store` / `referrer-policy` / `Cross-Origin-Resource-Policy` headers; errors use semantic status codes and fixed copy and **never echo** file-system errors, absolute paths, or stack traces;
 - Snapshots live only in memory and are never persisted; after an app restart, historical cards degrade to “changed hunks + line numbers located in the current file”, so whole-file comparison is unavailable.
 
@@ -337,6 +351,8 @@ For display details of inline cards, the expanded dialog, and the settings dialo
 - IN/OUT segment status is derived by pure functions in `tool-status.js` (input-side error codes, argument-validity fallback, non-zero exit codes, and abort markers), and the render layer colors segment bars and text by status; status changes pulse via brightness breathing of the stroke color;
 - Palette safety is generated from a single palette in `syntax-styles.js` as CSS and asserted by `tests/syntax-palette.test.mjs` (hue window 180°–285°, WCAG contrast, readability on red/green add/remove backgrounds) — any change that introduces red/green highlighting makes the tests fail;
 - Light/dark appearance is synced from the root element's `color-scheme` to `data-dsh-inline-diff-appearance`, then combined with each card's `data-shell-tone` / `data-inner-tone` to pick shell and inner tones;
+- Motion lives in a few pure helpers in `motion.js` plus the stylesheet: only three “appearing” moments animate (running card mount, output arrival, dialog open), while historical replay and settled cards render their final state immediately; only opacity/transform are used and everything is disabled under `prefers-reduced-motion: reduce`;
+- The “Version & updates” panel reads the version list and starts installs through the Host API, showing the result (success/failure/log tail) in place; version comparison, row flags and action labels are pure functions in `updates.js` covered by unit tests;
 - Read ranges are mounted after the official Read row's filename with a page-level `MutationObserver`; it only reacts to Read-row-related DOM changes and scans after the first frame, without depending on any single internal rendering path;
 - The full-screen dialog and the settings dialog are mounted to `document.body` via React Portal so third-party floating layers cannot cover them; click the backdrop or press Esc to close.
 
@@ -361,8 +377,9 @@ Every feature is designed along “primary path → fallback → display degrada
 
 ### Data and privacy
 
-- No network requests, no telemetry, no external services; never reads files outside the DSH session;
-- The Host read-only APIs have a browser trust boundary plus input/timeout/concurrency limits (see “Host side” above); the client uses no `innerHTML` / `dangerouslySetInnerHTML` / `eval` — highlighted HTML is only parsed into **plain-text tokens**;
+- By default no network requests, no telemetry, no external services; never reads files outside the DSH session;
+- The only exception is when the user explicitly clicks “Check for updates / Install”: the Host fetches npm registry metadata and invokes the local `dsh` CLI to install the plugin. Those requests contain only the package name/version — never session content, file content, keys or device information.
+- The Host APIs have a browser trust boundary plus input/timeout/concurrency limits (see “Host side” above); the update API additionally enforces a profile-name allow-list, install-anchor and absolute CLI path checks, semver + registry allow-list validation for versions, a 2 MB / 200-version registry-response cap, a single-job mutex and a 240s timeout that kills the process tree; CLI arguments are passed as argv, never through a shell; the client uses no `innerHTML` / `dangerouslySetInnerHTML` / `eval` — highlighted HTML is only parsed into **plain-text tokens**;
 - Snapshots have both entry-count and total-byte budgets, and diff materialization has line-count and per-line caps; when exceeded, the display degrades instead of freezing;
 - Only the before/after text needed for display is kept briefly in Host memory; nothing is written to disk by default;
 - Settings (including the interface language) are written only to the browser's localStorage; they contain no file contents;
@@ -386,6 +403,8 @@ Every feature is designed along “primary path → fallback → display degrada
 - **Rich-result cards**: rich cards such as read, todo, questions, and images are not covered by the expanded style and keep DSH's native interaction.
 - **Search/web row interaction**: in expanded style, search/web calls are shown as raw IN/OUT; interactions from the official cards such as “click a matched file to open it” and “click a URL to open a new tab” exist only in “DSH native” mode.
 - **Tool coverage of the expanded style**: command, generic, details, search, and web tool rows are taken over through keyed registration in `tool.call.toolview`, which applies only to tool names registered by the plugin; unregistered tools keep the official generic row on dsh ≥0.2.2-rc.1 (the plugin no longer covers the whole tool-call tree, avoiding duplicate sub-slot declarations with the official Tool layer).
+- **Update limitations**: the panel lists only npm releases; unpublished builds never appear. A one-click install replaces the current profile installation with the npm release (a local dev build would be overwritten — avoid clicking it in a development profile). DSH must be restarted afterwards (a page refresh is not enough); reinstalling the same version may be skipped by pnpm as already up to date; Desktop v1 has no in-place one-click install and shows a manual command instead, requiring a full quit of DSH.
+- **Motion**: entrance animations only cover “appearing” moments such as running cards and dialog opens; historical replay stays instant, and everything is disabled with the OS “reduce motion” preference.
 - **Cross-profile**: the plugin is installed per profile and does not sync automatically.
 - **Interface language is plugin-scoped**: the 1.3.0 language setting only affects this plugin's own UI copy; it does not modify DSH's global language and does not affect other plugins. “Follow DSH” follows DSH's global language (falling back to Chinese when the host language cannot be recognized or the matching dictionary is missing).
 - **Documentation and screenshots come in two sets**: Chinese is the default primary documentation (`README.md`, `docs/*.md`) and English is the counterpart documentation (`README.en.md`, `docs/*.en.md`); screenshots live in `docs/` and `docs/en/` respectively, with matching file names.
@@ -400,8 +419,8 @@ npm test
 ```
 
 - After changing `src/client/`, re-run `npm run build`; what gets installed is the built `client.js` in `plugin/`, and `npm run check` verifies that the committed `client.js` and `cordis.patch.yml` match the source and package name;
-- Before committing, make sure `npm run check` and `npm test` pass; the tests cover diff alignment, the card model, language detection, highlight.js token extraction, syntax-highlight palette safety constraints, IN/OUT failure attribution, read range, one-sided gutter legend adaptation (`gutterSides`), i18n language resolution/fallback, and security regressions;
-- New UI copy must be added to both the `zh` and `en` dictionaries in `src/client/locales.js` (the two key sets must stay identical), with Chinese as the default language; new or modified code needs detailed Chinese comments that also explain the fallback path on failure;
+- Before committing, make sure `npm run check` and `npm test` pass; the tests cover diff alignment, the card model, language detection, highlight.js token extraction, syntax-highlight palette safety constraints, IN/OUT failure attribution, read range, one-sided gutter legend adaptation (`gutterSides`), i18n resolution/fallback/default migration, version-update pure logic, and security regressions;
+- New UI copy must be added to both the `zh` and `en` dictionaries in `src/client/locales.js` (key sets and `{placeholders}` must match; `tests/locales.test.mjs` asserts it), with “Follow DSH” (`auto`) as the default language; new or modified code needs detailed Chinese comments that also explain the fallback path on failure;
 - Project identity is maintained centrally in [`src/client/project.js`](src/client/project.js); when the repository is renamed, update that file, the `homepage` / `repository` / `bugs` fields in `package.json`, and the README links;
 - Documentation: Chinese is primary (`README.md`, `docs/*.md`) and English is the counterpart (`README.en.md`, `docs/*.en.md`); Chinese screenshots go in `docs/` and English screenshots in `docs/en/`, with matching file names;
 - Publishing:
@@ -411,10 +430,11 @@ npm test
 
 ## Changelog
 
-Current version: **1.3.0** (2026-11-08). Version date index:
+Current version: **1.4.0** (2026-11-12). Version date index:
 
 | Version | Release date | Summary |
 | --- | --- | --- |
+| 1.4.0 | 2026-11-12 | Card/output/dialog motion (respecting reduced-motion), built-in version check with one-click update/rollback, default UI language changed to Follow DSH (with archive migration), readability fixes for syntax tokens on inline change segments and forced-opposite shell tones, verified on DSH 0.2.2-rc.2 |
 | 1.3.0 | 2026-11-08 | Bilingual UI with an in-settings language switch (Simplified Chinese default, English, follow-DSH), English documentation and dual-language screenshots, originality notice in the settings page and docs, security hardening, detailed Chinese code comments and multi-level fallbacks, and the first npm release (`@him666233/dsh-inline-diff`) |
 | 1.2.6 | 2026-11-07 | Fixes for shell colors under the official theme, the stray shell band under failed command cards, gutter legend alignment and one-sided adaptation, and badge hiding semantics |
 | 1.2.5 | 2026-11-07 | Old/New gutter legend, fixed dialog notice banner and settings dialog title, inset scrollbars |

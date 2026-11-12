@@ -35,6 +35,8 @@ import { getDiffHighlighter, tokensForRow } from './highlight.js'
 import { detectLanguage, languageInfo } from './languages.js'
 import { buildCardModel, deriveCall, operationKey, stateKeyOf } from './model.js'
 import { pulsePhase } from './motion.js'
+import { backdropProxyProps, fxRootProps, surfaceProps } from './surfaces.js'
+import { usePulseSync } from './use-pulse-sync.js'
 import { closeDiffModal, getDiffModal, openDiffModal, subscribeDiffModal } from './store.js'
 import { useSettingsSnapshot } from './use-settings.js'
 
@@ -624,6 +626,8 @@ function modalPayloadOf(model) {
 export function InlineDiffCard(props) {
   const { block, toolName, cwd, home, openFile, inspect, sessionId, t } = props
   const tone = useSettingsSnapshot()
+  // 卡片根 ref：把卡内呼吸动画对齐到同一相位（圆点与状态条同时亮）。
+  const pulseRef = usePulseSync()
   const call = useMemo(() => deriveCall(block), [block])
   const [snapshot, setSnapshot] = useState(undefined)
   const [fileText, setFileText] = useState(null)
@@ -723,9 +727,10 @@ export function InlineDiffCard(props) {
 
   return (
     <Fragment>
-      <div className="did-card" data-state={model.status} data-tool={model.toolName} data-call-id={model.callId} data-inline-diff="row" data-shell-tone={tone.fileShellTone} data-inner-tone={tone.fileInnerTone} data-language={languageId ?? 'unknown'} data-syn-emphasis={tone.syntaxEmphasis} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
+      <div className="did-card" ref={pulseRef} {...fxRootProps(tone, ['fileCardHeader', 'fileCardBody'])} data-state={model.status} data-tool={model.toolName} data-call-id={model.callId} data-inline-diff="row" data-shell-tone={tone.fileShellTone} data-inner-tone={tone.fileInnerTone} data-language={languageId ?? 'unknown'} data-syn-emphasis={tone.syntaxEmphasis} style={{ '--did-pulse-phase': pulsePhase(model.callId) }}>
         <div
           className="did-head"
+          {...surfaceProps(tone, 'fileCardHeader')}
           role="button"
           tabIndex={0}
           aria-expanded={!collapsed}
@@ -811,7 +816,7 @@ export function InlineDiffCard(props) {
         {!collapsed ? (
           hasHunks ? (
             <Fragment>
-              <div className="did-body">
+              <div className="did-body" {...surfaceProps(tone, 'fileCardBody')}>
                 {plan.parts.map(part => {
                   if (part.type === 'gap') return <GapBand gap={part.gap} t={t} key={part.key} />
                   return (
@@ -826,7 +831,7 @@ export function InlineDiffCard(props) {
                   )
                 })}
               </div>
-              <div className="did-foot">
+              <div className="did-foot" {...surfaceProps(tone, 'fileCardBody')}>
                 <span>{sourceLabel(model.source, t)}</span>
                 <span className="did-grow" />
                 {hidden > 0 ? <span>{t('inlineMore', { n: hidden })}</span> : null}
@@ -917,10 +922,15 @@ export function DiffModal({ t }) {
 
   const overlay = (
     <Fragment>
-      <div className="did-overlay-root" data-open="true">
-        <div className="did-overlay" onClick={close}>
+      <div className="did-overlay-root" data-open="true" data-enter="">
+        {/* 嵌套 backdrop-filter 会被 Chromium 忽略，因此放大弹窗表面的 blur/模式通过
+            遮罩层代理（见 surfaces.js 的 backdropProxyProps）：非 native 时遮罩自己按
+            --did-fx-blur 做模糊，弹窗材质叠在模糊后的背景上。 */}
+        <div className="did-overlay" {...backdropProxyProps(settings, 'diffModal')} onClick={close}>
           <div
             className="did-dialog"
+            data-enter=""
+            {...surfaceProps(settings, 'diffModal')}
             role="dialog"
             aria-modal="true"
             aria-label={t('modal.title')}

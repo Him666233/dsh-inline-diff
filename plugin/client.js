@@ -1583,10 +1583,10 @@ __export(index_exports, {
   inject: () => inject
 });
 module.exports = __toCommonJS(index_exports);
-var import_react6 = require("react");
+var import_react7 = require("react");
 
 // src/client/enhanced-shell.jsx
-var import_react3 = require("react");
+var import_react4 = require("react");
 
 // src/client/diff.js
 var CONTEXT_LINES = 3;
@@ -2629,9 +2629,163 @@ function pulsePhase(key) {
   }
   return `${-(hash % PULSE_DURATION_MS)}ms`;
 }
+var PULSE_ANIMATION_NAMES = Object.freeze(["dsh-inline-diff-pulse", "dsh-inline-diff-bar-pulse"]);
+function isPulseAnimation(animation) {
+  const name = animation?.animationName;
+  return typeof name === "string" && PULSE_ANIMATION_NAMES.includes(name);
+}
+function syncPulseAnimations(root) {
+  if (root === null || root === void 0 || typeof root.getAnimations !== "function") return false;
+  let animations;
+  try {
+    animations = root.getAnimations({ subtree: true });
+  } catch {
+    return false;
+  }
+  const pulses = animations.filter((animation) => isPulseAnimation(animation) && typeof animation.startTime === "number");
+  if (pulses.length < 2) return false;
+  let base = Infinity;
+  for (const animation of pulses) if (animation.startTime < base) base = animation.startTime;
+  if (!Number.isFinite(base)) return false;
+  let aligned = false;
+  for (const animation of pulses) {
+    if (animation.startTime === base) continue;
+    try {
+      animation.startTime = base;
+      aligned = true;
+    } catch {
+    }
+  }
+  return aligned || pulses.length >= 2;
+}
+function isLiveToolState(state2) {
+  return state2 === "running" || state2 === "preparing";
+}
+
+// src/client/surfaces.js
+var EFFECT_NATIVE = "native";
+var EFFECT_GLASS = "glass";
+var EFFECT_LIQUID = "liquid";
+var EFFECTS = Object.freeze([EFFECT_NATIVE, EFFECT_GLASS, EFFECT_LIQUID]);
+var LIQUID_CLEAR = "clear";
+var LIQUID_FROSTED = "frosted";
+var LIQUID_MODES = Object.freeze([LIQUID_CLEAR, LIQUID_FROSTED]);
+var FX_LIMITS = Object.freeze({
+  opacityMin: 0.05,
+  opacityMax: 1,
+  opacityStep: 0.05,
+  blurMin: 0,
+  blurMax: 40,
+  blurStep: 1
+});
+var DEFAULT_EFFECT = Object.freeze({
+  effect: EFFECT_NATIVE,
+  opacity: 0.55,
+  blur: 14,
+  mode: LIQUID_FROSTED
+});
+var SURFACES = Object.freeze([
+  { id: "fileCardHeader", labelKey: "fx.surface.fileCardHeader", descKey: "fx.surface.fileCardHeaderDesc" },
+  { id: "fileCardBody", labelKey: "fx.surface.fileCardBody", descKey: "fx.surface.fileCardBodyDesc" },
+  { id: "diffModal", labelKey: "fx.surface.diffModal", descKey: "fx.surface.diffModalDesc" },
+  { id: "commandHeader", labelKey: "fx.surface.commandHeader", descKey: "fx.surface.commandHeaderDesc" },
+  { id: "commandIO", labelKey: "fx.surface.commandIO", descKey: "fx.surface.commandIODesc" },
+  { id: "toolHeader", labelKey: "fx.surface.toolHeader", descKey: "fx.surface.toolHeaderDesc" },
+  { id: "toolIO", labelKey: "fx.surface.toolIO", descKey: "fx.surface.toolIODesc" },
+  { id: "readRangeChip", labelKey: "fx.surface.readRangeChip", descKey: "fx.surface.readRangeChipDesc" },
+  { id: "settingsPanel", labelKey: "fx.surface.settingsPanel", descKey: "fx.surface.settingsPanelDesc" }
+]);
+var SURFACE_IDS = Object.freeze(SURFACES.map((surface) => surface.id));
+function clampNumber(value, min, max, fallback) {
+  const number = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  if (number < min) return min;
+  if (number > max) return max;
+  return number;
+}
+function normalizeSurfaceEffect(value) {
+  const source3 = value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const effect = EFFECTS.includes(source3.effect) ? source3.effect : DEFAULT_EFFECT.effect;
+  const mode = LIQUID_MODES.includes(source3.mode) ? source3.mode : DEFAULT_EFFECT.mode;
+  const opacity = clampNumber(source3.opacity, FX_LIMITS.opacityMin, FX_LIMITS.opacityMax, DEFAULT_EFFECT.opacity);
+  const blur = clampNumber(source3.blur, FX_LIMITS.blurMin, FX_LIMITS.blurMax, DEFAULT_EFFECT.blur);
+  return { effect, opacity, blur, mode };
+}
+function normalizeEffects(value) {
+  const source3 = value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const next = {};
+  for (const id of SURFACE_IDS) next[id] = normalizeSurfaceEffect(source3[id]);
+  return next;
+}
+function defaultEffects() {
+  return normalizeEffects(void 0);
+}
+function effectOf(settings, surfaceId) {
+  const effects = settings !== null && settings !== void 0 ? settings.effects : void 0;
+  const raw = effects !== null && effects !== void 0 ? effects[surfaceId] : void 0;
+  if (raw === void 0) return DEFAULT_EFFECT;
+  return normalizeSurfaceEffect(raw);
+}
+function surfaceProps(settings, surfaceId) {
+  const config = effectOf(settings, surfaceId);
+  const props = {
+    "data-fx": config.effect,
+    "data-fx-surface": surfaceId,
+    style: {
+      "--did-fx-alpha": String(config.opacity),
+      "--did-fx-blur": `${config.blur}px`
+    }
+  };
+  if (config.effect === EFFECT_LIQUID) props["data-liquid-mode"] = config.mode;
+  return props;
+}
+function fxRootProps(settings, surfaceIds) {
+  for (const id of surfaceIds) {
+    if (effectOf(settings, id).effect !== EFFECT_NATIVE) return { "data-fx-root": "true" };
+  }
+  return {};
+}
+function surfaceDomValues(settings, surfaceId) {
+  return effectOf(settings, surfaceId);
+}
+function backdropProxyProps(settings, surfaceId) {
+  const config = effectOf(settings, surfaceId);
+  if (config.effect === EFFECT_NATIVE) return {};
+  const props = {
+    "data-fx-backdrop": config.effect,
+    style: { "--did-fx-blur": `${config.blur}px` }
+  };
+  if (config.effect === EFFECT_LIQUID) props["data-liquid-mode"] = config.mode;
+  return props;
+}
+
+// src/client/use-pulse-sync.js
+var import_react = require("react");
+var LATE_SYNC_MS = 320;
+function usePulseSync() {
+  const ref = (0, import_react.useRef)(null);
+  (0, import_react.useEffect)(() => {
+    const root = ref.current;
+    if (root === null) return void 0;
+    syncPulseAnimations(root);
+    let frame = null;
+    let timer = null;
+    const run = () => {
+      syncPulseAnimations(root);
+    };
+    if (typeof requestAnimationFrame === "function") frame = requestAnimationFrame(run);
+    else timer = setTimeout(run, 16);
+    const late = setTimeout(run, LATE_SYNC_MS);
+    return () => {
+      if (frame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
+      if (timer !== null) clearTimeout(timer);
+      clearTimeout(late);
+    };
+  });
+  return ref;
+}
 
 // src/client/enhanced-tools.jsx
-var import_react2 = require("react");
+var import_react3 = require("react");
 
 // src/client/tool-status.js
 var INPUT_FAILURE_CODES = Object.freeze([
@@ -2731,13 +2885,14 @@ function shellSectionStates(call2, exitFailed) {
 }
 
 // src/client/use-settings.js
-var import_react = require("react");
+var import_react2 = require("react");
 
 // src/client/locales.js
 var NS = "inline-diff";
 var SUPPORTED_LANGUAGES = Object.freeze(["zh", "en"]);
 var LANGUAGE_SETTINGS = Object.freeze(["zh", "en", "auto"]);
 var DEFAULT_LANGUAGE = "zh";
+var DEFAULT_LANGUAGE_SETTING = "auto";
 var zh = {
   "title.edit": "编辑",
   "title.write": "写入",
@@ -2815,10 +2970,10 @@ var zh = {
   // 插件级语言选择（1.3.0）。这一行的文案本身也按“当前插件语言”渲染，
   // 因此切换语言后立刻就能看出效果。
   "settings.language": "语言",
-  "settings.languageDesc": "插件界面的显示语言。「跟随 DSH」会跟随 DSH 的语言设置：DSH 为中文时显示中文，其他语言时显示英文。切换后立即生效，无需刷新。",
+  "settings.languageDesc": "插件界面的显示语言。默认「跟随 DSH」：DSH 为中文时显示中文，其他语言时显示英文；也可以固定中文/英文。切换后立即生效，无需刷新。",
   "settings.languageZh": "中文",
   "settings.languageEn": "English",
-  "settings.languageAuto": "跟随 DSH",
+  "settings.languageAuto": "跟随 DSH（默认）",
   // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案。
   "originality.title": "原创声明",
   "originality.body": "本项目（DSH Inline Diff）完全原创，与 {repo} 以及任何其他同名插件或仓库均无任何关联。部分功能雷同纯属巧合；实现方式与代码效果完全不同；开发时没有参考任何同类插件；本项目不是对方的衍生作品或复刻作品。",
@@ -2865,8 +3020,70 @@ var zh = {
   "settings.subagentNote": "子代理会话与主会话共用这套设置；差异快照按各自 Session 独立记录，互不影响。",
   "settings.dsmCurrent": "当前 DSH 对话记录模式：{mode}",
   "settings.reset": "恢复默认",
+  "update.title": "版本与更新",
+  "update.current": "当前版本 v{version}",
+  "update.latest": "最新",
+  "update.installed": "当前",
+  "update.deprecated": "已废弃",
+  "update.unavailable": "不可安装",
+  "update.check": "检查更新",
+  "update.checking": "正在查询…",
+  "update.versions": "版本列表",
+  "update.selectVersion": "选择版本",
+  "update.updateTo": "更新到 v{version}",
+  "update.rollbackTo": "回退到 v{version}",
+  "update.reinstall": "重新安装 v{version}",
+  "update.installing": "正在安装…",
+  "update.restartHint": "安装后需要重启 DSH 才会生效",
+  "update.manualHint": "当前环境需手动安装（见下方命令）",
+  "update.manualCommandHint": "请先完全退出 DSH，然后在命令行执行（profile：{profile}）",
+  "update.idleHint": "点击「检查更新」查看 npm 上的全部版本",
+  "update.installOk": "已安装 v{version}，重启 DSH 后生效",
+  "update.installFailed": "安装失败（{code}）",
+  "update.log": "安装日志",
+  "update.errorNetwork": "无法获取版本信息（网络或 registry 不可用）",
   "settings.saving": "正在保存…",
   "settings.live": "设置自动生效",
+  // ---- 逐表面外观效果（1.4.0）----
+  // 设置面板末尾的「外观效果」折叠分组。表面 id → 文案键的映射在 surfaces.js
+  // 的 SURFACES 里（labelKey / descKey），键名必须与那边完全一致。
+  "fx.sectionTitle": "外观效果",
+  "fx.sectionDesc": "为每个可视表面单独选择材质。原生保持现有外观（默认）；磨砂玻璃为半透明高斯模糊材质，可调透明度与模糊；液态玻璃为 iOS 26 风格，另有「完全通透 / 带一点模糊」两种液态模式。改动即时保存并生效。",
+  "fx.note": "玻璃效果依赖浏览器的 backdrop-filter，现代 Chromium / Safari 可用；不支持时会自动退回半透明底色，文字仍然可读。「恢复默认」会同时把所有表面恢复为原生。",
+  // 折叠标题 = fx.sectionTitle + 下面两条（键里自带本语言习惯的括号，标题因此
+  // 在两种语言下都是自然写法：「外观效果（3 个表面已启用）」）。
+  "fx.summaryCount": "（{n} 个表面已启用）",
+  "fx.summaryNone": "（全部原生）",
+  "fx.effect": "效果",
+  "fx.effectNative": "原生",
+  "fx.effectGlass": "磨砂玻璃",
+  "fx.effectLiquid": "液态玻璃",
+  "fx.effectNativeDesc": "保持当前外观，不做任何材质处理（默认）。",
+  "fx.effectGlassDesc": "半透明磨砂玻璃：背景高斯模糊 + 细高光描边，透明度与模糊可调。",
+  "fx.effectLiquidDesc": "液态玻璃：更通透的折射观感与边缘高光，可选「完全通透」或「带一点模糊」。",
+  "fx.opacity": "透明度",
+  "fx.blur": "模糊",
+  "fx.liquidMode": "液态模式",
+  "fx.liquidClear": "完全通透",
+  "fx.liquidFrosted": "带一点模糊",
+  "fx.surface.fileCardHeader": "文件卡片头部",
+  "fx.surface.fileCardHeaderDesc": "文件修改卡片顶部可展开 / 收起的一行。",
+  "fx.surface.fileCardBody": "文件卡片内容区",
+  "fx.surface.fileCardBodyDesc": "文件修改卡片的差异内容与底部状态条。",
+  "fx.surface.diffModal": "放大对照弹窗",
+  "fx.surface.diffModalDesc": "在卡片上点「放大」后打开的整窗差异对照。",
+  "fx.surface.commandHeader": "命令卡片头部",
+  "fx.surface.commandHeaderDesc": "bash / pwsh 等命令执行卡片的标题行。",
+  "fx.surface.commandIO": "命令 IN/OUT",
+  "fx.surface.commandIODesc": "命令卡片的输入与输出面板。",
+  "fx.surface.toolHeader": "工具卡片头部",
+  "fx.surface.toolHeaderDesc": "其它工具调用卡片的标题行。",
+  "fx.surface.toolIO": "工具 IN/OUT",
+  "fx.surface.toolIODesc": "其它工具调用卡片的输入与输出面板。",
+  "fx.surface.readRangeChip": "读取行范围徽标",
+  "fx.surface.readRangeChipDesc": "读取文件时显示行范围的小徽标。",
+  "fx.surface.settingsPanel": "设置面板",
+  "fx.surface.settingsPanelDesc": "本设置弹窗与设置页的整个面板。",
   "shell.in": "IN",
   "shell.out": "OUT",
   // 命令行退出码 / 信号徽标（[exit code: N] 标记文本由 Host 产生，这里是 UI 文案）。
@@ -3006,10 +3223,10 @@ var en = {
   "settings.description": "Presentation only: session records, model input, and tool execution are unchanged. The expanded style gives flat, transparent output — per-edit inline diffs for file changes and IN/OUT expanded by default for commands and other tools; DSH native keeps the stock presentation.",
   // 插件级语言选择（1.3.0）：英文界面下的同一组选项。
   "settings.language": "Language",
-  "settings.languageDesc": "Display language for this plugin. “Follow DSH” mirrors the DSH language setting: Chinese shows Chinese and any other language shows English. The switch applies immediately — no reload needed.",
+  "settings.languageDesc": "Display language for this plugin. Default “Follow DSH” mirrors the DSH language setting: Chinese shows Chinese and any other language shows English; you can also pin Chinese or English. The switch applies immediately — no reload needed.",
   "settings.languageZh": "中文",
   "settings.languageEn": "English",
-  "settings.languageAuto": "Follow DSH",
+  "settings.languageAuto": "Follow DSH (default)",
   // 两个设置界面（设置页 + 设置弹窗）顶部展示的原创声明文案（英文）。
   "originality.title": "Originality",
   "originality.body": "This project (DSH Inline Diff) is a fully original work and has no affiliation with {repo} or with any other plugin or repository of a similar name. Any similarity in functionality is purely coincidental; the implementation and code behavior are entirely different; no reference was made to any such plugin during development; and this project is neither a derivative nor a replica of it.",
@@ -3056,8 +3273,72 @@ var en = {
   "settings.subagentNote": "Subagent sessions use the same settings; diff snapshots are recorded per Session and never interfere.",
   "settings.dsmCurrent": "Current DSH transcript mode: {mode}",
   "settings.reset": "Reset to defaults",
+  "update.title": "Version & updates",
+  "update.current": "Current version v{version}",
+  "update.latest": "Latest",
+  "update.installed": "Installed",
+  "update.deprecated": "Deprecated",
+  "update.unavailable": "Unavailable",
+  "update.check": "Check for updates",
+  "update.checking": "Checking…",
+  "update.versions": "Version list",
+  "update.selectVersion": "Select a version",
+  "update.updateTo": "Update to v{version}",
+  "update.rollbackTo": "Roll back to v{version}",
+  "update.reinstall": "Reinstall v{version}",
+  "update.installing": "Installing…",
+  "update.restartHint": "Restart DSH after installing to take effect",
+  "update.manualHint": "Manual install required here (see command below)",
+  "update.manualCommandHint": "Quit DSH completely, then run in a terminal (profile: {profile})",
+  "update.idleHint": "Click “Check for updates” to list all npm versions",
+  "update.installOk": "Installed v{version}; restart DSH to take effect",
+  "update.installFailed": "Install failed ({code})",
+  "update.log": "Install log",
+  "update.errorNetwork": "Could not load versions (network or registry unavailable)",
   "settings.saving": "Saving…",
   "settings.live": "Settings apply automatically",
+  // ---- Per-surface appearance effects (1.4.0) ----
+  // Labels/descriptions for the “Appearance effects” group at the end of the
+  // settings panel. The surface id → key mapping lives in surfaces.js
+  // (SURFACES[].labelKey / descKey) and must stay in sync with these keys.
+  "fx.sectionTitle": "Appearance effects",
+  "fx.sectionDesc": "Choose a material for each visible surface. Native keeps the current look (default). Frosted glass is a translucent, blurred material with adjustable opacity and blur. Liquid glass follows the iOS 26 look with its own Clear / Slightly frosted liquid modes. Changes save and apply immediately.",
+  "fx.note": "Glass effects rely on the browser backdrop-filter, available in modern Chromium / Safari; unsupported browsers fall back to a translucent color so text stays readable. “Reset to defaults” also returns every surface to native.",
+  // Collapsible title = fx.sectionTitle + one of these; the brackets live in the
+  // translated string so both languages read naturally (“Appearance effects (3
+  // surfaces enabled)”).
+  "fx.summaryCount": " ({n} surfaces enabled)",
+  "fx.summaryNone": " (all native)",
+  "fx.effect": "Effect",
+  "fx.effectNative": "Native",
+  "fx.effectGlass": "Frosted glass",
+  "fx.effectLiquid": "Liquid glass",
+  "fx.effectNativeDesc": "Keeps the current look with no material treatment (default).",
+  "fx.effectGlassDesc": "Translucent frosted glass: a blurred backdrop with a thin highlight edge; opacity and blur are adjustable.",
+  "fx.effectLiquidDesc": "Liquid glass: a clearer, refractive look with edge highlights; choose Clear or Slightly frosted.",
+  "fx.opacity": "Opacity",
+  "fx.blur": "Blur",
+  "fx.liquidMode": "Liquid mode",
+  "fx.liquidClear": "Clear",
+  "fx.liquidFrosted": "Slightly frosted",
+  "fx.surface.fileCardHeader": "File card header",
+  "fx.surface.fileCardHeaderDesc": "The clickable row at the top of a file-change card.",
+  "fx.surface.fileCardBody": "File card body",
+  "fx.surface.fileCardBodyDesc": "The diff content and footer status strip of a file-change card.",
+  "fx.surface.diffModal": "Comparison dialog",
+  "fx.surface.diffModalDesc": "The full-window diff view opened from a card.",
+  "fx.surface.commandHeader": "Command card header",
+  "fx.surface.commandHeaderDesc": "The title row of a command card (bash, pwsh, …).",
+  "fx.surface.commandIO": "Command IN/OUT",
+  "fx.surface.commandIODesc": "The input and output panels of a command card.",
+  "fx.surface.toolHeader": "Tool card header",
+  "fx.surface.toolHeaderDesc": "The title row of other tool-call cards.",
+  "fx.surface.toolIO": "Tool IN/OUT",
+  "fx.surface.toolIODesc": "The input and output panels of other tool-call cards.",
+  "fx.surface.readRangeChip": "Read range chip",
+  "fx.surface.readRangeChipDesc": "The small line-range chip shown for file reads.",
+  "fx.surface.settingsPanel": "Settings panel",
+  "fx.surface.settingsPanelDesc": "The whole settings dialog and settings page.",
   "shell.in": "IN",
   "shell.out": "OUT",
   // 命令行退出码 / 信号徽标（英文）。
@@ -3124,20 +3405,32 @@ var en = {
 var dicts = { zh, en };
 
 // src/client/settings.js
-var STORAGE_KEY = "dsh-inline-diff.settings.v4";
-var LEGACY_KEY = "dsh-inline-diff.settings.v3";
-var OLDER_KEY = "dsh-inline-diff.settings.v2";
-var RETIRED_KEY = "dsh-inline-diff.settings.v1";
+var STORAGE_KEY = "dsh-inline-diff.settings.v5";
+var LEGACY_KEYS = Object.freeze([
+  "dsh-inline-diff.settings.v4",
+  "dsh-inline-diff.settings.v3",
+  "dsh-inline-diff.settings.v2"
+]);
+var RETIRED_KEYS = Object.freeze(["dsh-inline-diff.settings.v1"]);
 var DEFAULTS = {
   /**
    * 插件级界面语言（1.3.0 新增）：
-   *   'zh'（默认）中文；'en' 英文；'auto' 跟随 DSH 全局语言（DSH 中文→中文，
-   *   其它语言→英文）。
+   *   'auto'（默认）跟随 DSH 全局语言（DSH 中文→中文，其它语言→英文）；
+   *   'zh' 固定中文；'en' 固定英文。
    * 这是插件自己的显示偏好，与 DSH 的全局 locale 相互独立：客户端文案从
    * src/client/locales.js 取字典，由插件语言选择；宿主渲染的 slot label 在
-   * 语言变化时重新注册。旧存档没有该字段，迁移为默认值 'zh'。
+   * 语言变化时重新注册。
+   * 默认值在 1.3.x 之后从固定中文改为 auto；旧存档若从未明确选择过语言，
+   * 迁移时也落到 auto（用户曾经明确选过的 zh/en 会保留，见 languageChosen）。
    */
-  language: DEFAULT_LANGUAGE,
+  language: DEFAULT_LANGUAGE_SETTING,
+  /**
+   * 内部字段：用户是否在设置页明确选择过语言。
+   * 旧版本没有该字段，因此无法区分“默认值 zh”和“用户手动选了 zh”；迁移时
+   * 把没有该标记的旧 zh 视为“从未选择”→ 迁移到新默认 auto。用户一旦在 UI
+   * 里切换语言（updateSettings 收到合法 language），该标记即置 true。
+   */
+  languageChosen: false,
   /** 'enhanced' = 内联差异卡片；'native' = DSH 原生文件修改行。 */
   fileCards: "enhanced",
   /** 'enhanced' = 平铺展开的 Bash/PowerShell 行；'native' = DSH 原生行。 */
@@ -3154,6 +3447,13 @@ var DEFAULTS = {
   fileInnerTone: "auto",
   shellInnerTone: "auto",
   toolInnerTone: "auto",
+  /**
+   * 逐表面外观效果（1.4.0 新增）：
+   *   { [surfaceId]: { effect: 'native'|'glass'|'liquid', opacity, blur, mode } }
+   * 表面清单与归一化规则在 ./surfaces.js（唯一事实来源）。旧存档（v4 及更早）
+   * 没有该字段，迁移后全部为 native，即外观与旧版本完全一致。
+   */
+  effects: defaultEffects(),
   /** 差异代码的语法高亮开关（语言识别与配色见 languages.js / highlight.js）。 */
   syntaxHighlight: true,
   /** 语言徽章样式：'short' 短代码、'full' 全名、'hidden' 隐藏。 */
@@ -3212,6 +3512,9 @@ var SETTING_VALIDATORS = {
   fileInnerTone: enumGuard(INNER_TONE_VALUES),
   shellInnerTone: enumGuard(INNER_TONE_VALUES),
   toolInnerTone: enumGuard(INNER_TONE_VALUES),
+  // 逐表面外观效果：整份对象做归一化（未知表面丢弃、非法字段回退默认），
+  // 因此 updateSettings 收到 `{ effects: 任意值 }` 也只会写入合法配置。
+  effects: (value) => normalizeEffects(value),
   syntaxHighlight: (value) => typeof value === "boolean" ? value : void 0,
   languageBadge: enumGuard(LANGUAGE_BADGE_VALUES),
   unknownLanguage: enumGuard(UNKNOWN_LANGUAGE_VALUES),
@@ -3257,14 +3560,28 @@ function load() {
     const storage = globalThis.localStorage;
     if (storage === void 0 || storage === null) return { ...DEFAULTS };
     let raw = storage.getItem(STORAGE_KEY);
-    if (typeof raw !== "string" || raw === "") raw = storage.getItem(LEGACY_KEY);
-    if (typeof raw !== "string" || raw === "") raw = storage.getItem(OLDER_KEY);
+    if (typeof raw !== "string" || raw === "") {
+      for (const legacyKey of LEGACY_KEYS) {
+        raw = storage.getItem(legacyKey);
+        if (typeof raw === "string" && raw !== "") break;
+      }
+    }
     if (typeof raw !== "string" || raw === "") return { ...DEFAULTS };
     if (raw.length > MAX_STORED_SETTINGS_CHARS) return { ...DEFAULTS };
     const parsed = JSON.parse(raw);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { ...DEFAULTS };
     const next = { ...DEFAULTS };
-    next.language = normalizeEnum(parsed.language, LANGUAGE_SETTINGS, DEFAULTS.language);
+    const storedLanguage = normalizeEnum(parsed.language, LANGUAGE_SETTINGS, void 0);
+    if (parsed.languageChosen === true) {
+      next.language = storedLanguage ?? DEFAULTS.language;
+      next.languageChosen = true;
+    } else if (storedLanguage === "en" || storedLanguage === "auto") {
+      next.language = storedLanguage;
+      next.languageChosen = true;
+    } else {
+      next.language = DEFAULTS.language;
+      next.languageChosen = false;
+    }
     const fileCards = normalizeMode(parsed.fileCards);
     const shellRows = normalizeMode(parsed.shellRows);
     const toolCalls = normalizeMode(parsed.toolCalls);
@@ -3279,6 +3596,7 @@ function load() {
     if (parsed.fileInnerTone !== void 0) next.fileInnerTone = normalizeInnerTone(parsed.fileInnerTone);
     if (parsed.shellInnerTone !== void 0) next.shellInnerTone = normalizeInnerTone(parsed.shellInnerTone);
     if (parsed.toolInnerTone !== void 0) next.toolInnerTone = normalizeInnerTone(parsed.toolInnerTone);
+    next.effects = normalizeEffects(parsed.effects);
     next.syntaxHighlight = normalizeBoolean(parsed.syntaxHighlight, DEFAULTS.syntaxHighlight);
     next.languageBadge = normalizeEnum(parsed.languageBadge, LANGUAGE_BADGE_VALUES, DEFAULTS.languageBadge);
     next.unknownLanguage = normalizeEnum(parsed.unknownLanguage, UNKNOWN_LANGUAGE_VALUES, DEFAULTS.unknownLanguage);
@@ -3295,9 +3613,8 @@ function persist() {
       ...state,
       ...previousTranscript === void 0 ? {} : { previousTranscript }
     }));
-    globalThis.localStorage?.removeItem(LEGACY_KEY);
-    globalThis.localStorage?.removeItem(OLDER_KEY);
-    globalThis.localStorage?.removeItem(RETIRED_KEY);
+    for (const legacyKey of LEGACY_KEYS) globalThis.localStorage?.removeItem(legacyKey);
+    for (const retiredKey of RETIRED_KEYS) globalThis.localStorage?.removeItem(retiredKey);
   } catch {
   }
 }
@@ -3323,6 +3640,7 @@ function updateSettings(patch) {
     if (value !== void 0) next[key] = value;
   }
   if (Object.keys(next).length === 0) return;
+  if (next.language !== void 0) next.languageChosen = true;
   state = { ...state, ...next };
   persist();
   emit();
@@ -3398,7 +3716,7 @@ async function adoptTranscriptPreference() {
 
 // src/client/use-settings.js
 function useSettingsSnapshot() {
-  return (0, import_react.useSyncExternalStore)(subscribeSettings, getSettings, getSettings);
+  return (0, import_react2.useSyncExternalStore)(subscribeSettings, getSettings, getSettings);
 }
 
 // src/client/enhanced-tools.jsx
@@ -3521,12 +3839,18 @@ function genericModel(block, toolName, t) {
 }
 function EnhancedExpandedTool({ block, toolName, t, inspect }) {
   const tone = useSettingsSnapshot();
-  const model = (0, import_react2.useMemo)(() => genericModel(block, toolName, t), [block, toolName, t]);
-  const [open, setOpen] = (0, import_react2.useState)(true);
+  const model = (0, import_react3.useMemo)(() => genericModel(block, toolName, t), [block, toolName, t]);
+  const [open, setOpen] = (0, import_react3.useState)(true);
+  const [enter] = (0, import_react3.useState)(() => isLiveToolState(model.state));
+  const waitingRef = (0, import_react3.useRef)(model.waitingForOutput);
+  const outputAppeared = (0, import_react3.useRef)(false);
+  if (model.output !== "" && waitingRef.current) outputAppeared.current = true;
+  waitingRef.current = model.waitingForOutput;
+  const pulseRef = usePulseSync();
   const stateLabel = stateKeyOf(model.state);
   const hasBody = model.input !== "" || model.output !== "";
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-tool enhanced-generic", "data-variant": "tool", "data-kind": model.kind, "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.toolShellTone, "data-inner-tone": tone.toolInnerTone, "data-body": hasBody && open ? "true" : "false", style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-head", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-tool enhanced-generic", ref: pulseRef, ...fxRootProps(tone, ["toolHeader", "toolIO"]), "data-variant": "tool", "data-kind": model.kind, "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.toolShellTone, "data-inner-tone": tone.toolInnerTone, "data-body": hasBody && open ? "true" : "false", "data-enter": enter ? "" : void 0, style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-head", ...surfaceProps(tone, "toolHeader"), children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "enhanced-kind", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(KindIcon, { kind: model.kind }) }),
       hasBody ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
         "button",
@@ -3549,13 +3873,13 @@ function EnhancedExpandedTool({ block, toolName, t, inspect }) {
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)(InspectButton, { inspect, t })
       ] })
     ] }),
-    open && hasBody ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-io", children: [
+    open && hasBody ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-io", ...surfaceProps(tone, "toolIO"), children: [
       model.input !== "" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-section", "data-section": "in", "data-state": model.inputState, children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "enhanced-label", children: t("tool.in") }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "enhanced-scroll enhanced-scroll-in", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { className: "enhanced-code", "data-error": model.inputState === "error" ? "" : void 0, children: model.input }) })
       ] }) : null,
       model.input !== "" && model.output !== "" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "enhanced-divider", "aria-hidden": "true" }) : null,
-      model.output !== "" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-section", "data-section": "out", "data-state": model.outputState, children: [
+      model.output !== "" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-section", "data-section": "out", "data-state": model.outputState, "data-appear": outputAppeared.current ? "" : void 0, children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "enhanced-label", children: t("tool.out") }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "enhanced-scroll", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { className: "enhanced-code", "data-error": model.outputState === "error" ? "" : void 0, children: model.output }) })
       ] }) : model.waitingForOutput ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "enhanced-section", "data-section": "out", "data-state": model.outputState, children: [
@@ -3754,11 +4078,17 @@ function shellModel(block, toolName) {
 function EnhancedShellCard(props) {
   const { block, toolName, phase, t, inspect } = props;
   const tone = useSettingsSnapshot();
-  const model = (0, import_react3.useMemo)(() => shellModel(block, toolName), [block, toolName]);
+  const pulseRef = usePulseSync();
+  const model = (0, import_react4.useMemo)(() => shellModel(block, toolName), [block, toolName]);
+  const [enter] = (0, import_react4.useState)(() => isLiveToolState(model.state));
+  const waitingRef = (0, import_react4.useRef)(model.waitingForOutput);
+  const outputAppeared = (0, import_react4.useRef)(false);
+  if (model.output !== "" && waitingRef.current) outputAppeared.current = true;
+  waitingRef.current = model.waitingForOutput;
   const hasIO = model.input !== "" || model.output !== "" || model.waitingForOutput;
   const stateLabel = model.state === "error" ? t("state.error") : model.state === "stopped" ? t("state.stopped") : model.state === "running" ? t("state.running") : model.state === "preparing" ? t("state.preparing") : "";
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-tool enhanced-command", "data-variant": "command", "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.shellShellTone, "data-inner-tone": tone.shellInnerTone, "data-body": hasIO ? "true" : "false", style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-head", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-tool enhanced-command", ref: pulseRef, ...fxRootProps(tone, ["commandHeader", "commandIO"]), "data-variant": "command", "data-state": model.state, "data-tool": toolName, "data-shell-tone": tone.shellShellTone, "data-inner-tone": tone.shellInnerTone, "data-body": hasIO ? "true" : "false", "data-enter": enter ? "" : void 0, style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-head", ...surfaceProps(tone, "commandHeader"), children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-kind", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(KindIcon, { kind: "command" }) }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-dot", "aria-hidden": "true" }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-name", children: model.title }),
@@ -3769,13 +4099,13 @@ function EnhancedShellCard(props) {
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(InspectButton, { inspect, t })
       ] })
     ] }),
-    hasIO ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-io", children: [
+    hasIO ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-io", ...surfaceProps(tone, "commandIO"), children: [
       model.input !== "" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-section", "data-section": "in", "data-state": model.inputState, children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-label", children: t("shell.in") }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "enhanced-scroll enhanced-scroll-in", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("pre", { className: "enhanced-code", "data-error": model.inputState === "error" ? "" : void 0, children: model.input }) })
       ] }) : null,
       model.input !== "" && model.output !== "" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "enhanced-divider", "aria-hidden": "true" }) : null,
-      model.output !== "" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-section", "data-section": "out", "data-state": model.outputState, children: [
+      model.output !== "" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-section", "data-section": "out", "data-state": model.outputState, "data-appear": outputAppeared.current ? "" : void 0, children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "enhanced-label", children: t("shell.out") }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "enhanced-scroll", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("pre", { className: "enhanced-code", "data-error": model.outputState === "error" ? "" : void 0, children: model.output }) })
       ] }) : model.waitingForOutput ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "enhanced-section", "data-section": "out", "data-state": model.outputState, children: [
@@ -3790,7 +4120,7 @@ function EnhancedShellCard(props) {
 }
 
 // src/client/components.jsx
-var import_react4 = require("react");
+var import_react5 = require("react");
 var import_react_dom = require("react-dom");
 
 // src/client/api.js
@@ -3875,6 +4205,45 @@ async function cachedSnapshot(sessionId, callId) {
   snapshotCache.set(key, snapshot);
   trimCache(snapshotCache, SNAPSHOT_CACHE_LIMIT);
   return snapshot;
+}
+async function fetchUpdateInfo(refresh) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25e3);
+  try {
+    const suffix = refresh === true ? "?refresh=1" : "";
+    const response = await fetch(`${API_PREFIX}/update/versions${suffix}`, {
+      credentials: "include",
+      signal: controller.signal,
+      headers: { accept: "application/json" }
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data !== null && typeof data === "object" && data.ok === true ? data : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function performUpdate(version) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 26e4);
+  try {
+    const response = await fetch(`${API_PREFIX}/update/install`, {
+      method: "POST",
+      credentials: "include",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ version })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data !== null && typeof data === "object" ? data : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // node_modules/highlight.js/es/core.js
@@ -22128,7 +22497,7 @@ function RowText({ row, fallback, tokens }) {
   if (colorable !== null && hasSegments) {
     const groups = splitTokensBySegments(colorable, segments);
     if (groups !== null) {
-      return groups.map((group, index) => group.changed ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-seg", "data-changed": "true", children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react4.Fragment, { children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index));
+      return groups.map((group, index) => group.changed ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-seg", "data-changed": "true", children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react5.Fragment, { children: group.pieces.map((piece, pieceIndex) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TokenSpan, { token: piece }, pieceIndex)) }, index));
     }
   }
   if (!hasSegments) return fallback;
@@ -22283,7 +22652,7 @@ function SideBySide({ diff: diff2, mode, pathLabel, t, highlighter }) {
   }
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-sbs", "data-mode": "hunks", children: diff2.hunks.map((hunk) => {
     const { pairs } = pairRows(hunk.rows, Number.POSITIVE_INFINITY);
-    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react4.Fragment, { children: [
+    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react5.Fragment, { children: [
       hunk.gapBefore !== null && hunk.gapBefore !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(GapBand, { gap: hunk.gapBefore, t }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-bar", children: [
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-bar-file", title: pathLabel || void 0, children: pathLabel }),
@@ -22336,12 +22705,13 @@ function modalPayloadOf(model) {
 function InlineDiffCard(props) {
   const { block, toolName, cwd, home, openFile, inspect, sessionId, t } = props;
   const tone = useSettingsSnapshot();
-  const call2 = (0, import_react4.useMemo)(() => deriveCall(block), [block]);
-  const [snapshot, setSnapshot] = (0, import_react4.useState)(void 0);
-  const [fileText, setFileText] = (0, import_react4.useState)(null);
-  const [collapsed, setCollapsed] = (0, import_react4.useState)(false);
-  const requested = (0, import_react4.useRef)(false);
-  (0, import_react4.useEffect)(() => {
+  const pulseRef = usePulseSync();
+  const call2 = (0, import_react5.useMemo)(() => deriveCall(block), [block]);
+  const [snapshot, setSnapshot] = (0, import_react5.useState)(void 0);
+  const [fileText, setFileText] = (0, import_react5.useState)(null);
+  const [collapsed, setCollapsed] = (0, import_react5.useState)(false);
+  const requested = (0, import_react5.useRef)(false);
+  (0, import_react5.useEffect)(() => {
     if (requested.current) return;
     if (!call2.settled || call2.isError) return;
     requested.current = true;
@@ -22363,7 +22733,7 @@ function InlineDiffCard(props) {
       alive = false;
     };
   }, [call2.settled, call2.isError, call2.callId, call2.meta, cwd, sessionId]);
-  const model = (0, import_react4.useMemo)(() => buildCardModel({
+  const model = (0, import_react5.useMemo)(() => buildCardModel({
     block,
     toolName,
     cwd,
@@ -22373,18 +22743,18 @@ function InlineDiffCard(props) {
     loading: snapshot === void 0 && call2.settled && !call2.isError
   }), [block, toolName, cwd, home, snapshot, fileText, call2.settled, call2.isError]);
   const diff2 = model.diff;
-  const languageId = (0, import_react4.useMemo)(
+  const languageId = (0, import_react5.useMemo)(
     () => detectLanguage(model.absolutePath ?? model.filePath, model.diff?.afterText ?? model.diff?.beforeText ?? ""),
     [model.absolutePath, model.filePath, model.diff]
   );
-  const highlighter = (0, import_react4.useMemo)(
+  const highlighter = (0, import_react5.useMemo)(
     () => tone.syntaxHighlight !== false && languageId !== null && diff2 !== null && diff2 !== void 0 ? getDiffHighlighter(diff2, languageId) : null,
     [diff2, languageId, tone.syntaxHighlight]
   );
   const hasHunks = diff2 !== null && diff2 !== void 0 && diff2.hunks.length > 0;
   const stateKey = stateKeyOf(model.status);
   const totalHunks = hasHunks ? diff2.hunks.length : 0;
-  const plan = (0, import_react4.useMemo)(() => hasHunks ? buildInlinePlan(diff2) : null, [diff2, hasHunks]);
+  const plan = (0, import_react5.useMemo)(() => hasHunks ? buildInlinePlan(diff2) : null, [diff2, hasHunks]);
   const hidden = plan === null ? 0 : plan.total - plan.shown;
   const truncated = diff2 !== null && diff2 !== void 0 && diff2.truncated === true;
   const cardNotice = (() => {
@@ -22424,11 +22794,12 @@ function InlineDiffCard(props) {
     ] });
     return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-empty", children: t("noDiff") });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react4.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-card", "data-state": model.status, "data-tool": model.toolName, "data-call-id": model.callId, "data-inline-diff": "row", "data-shell-tone": tone.fileShellTone, "data-inner-tone": tone.fileInnerTone, "data-language": languageId ?? "unknown", "data-syn-emphasis": tone.syntaxEmphasis, style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react5.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-card", ref: pulseRef, ...fxRootProps(tone, ["fileCardHeader", "fileCardBody"]), "data-state": model.status, "data-tool": model.toolName, "data-call-id": model.callId, "data-inline-diff": "row", "data-shell-tone": tone.fileShellTone, "data-inner-tone": tone.fileInnerTone, "data-language": languageId ?? "unknown", "data-syn-emphasis": tone.syntaxEmphasis, style: { "--did-pulse-phase": pulsePhase(model.callId) }, children: [
     /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
       "div",
       {
         className: "did-head",
+        ...surfaceProps(tone, "fileCardHeader"),
         role: "button",
         tabIndex: 0,
         "aria-expanded": !collapsed,
@@ -22495,8 +22866,8 @@ function InlineDiffCard(props) {
       }
     ),
     cardNotice !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-notice", children: cardNotice }) : null,
-    !collapsed ? hasHunks ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react4.Fragment, { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-body", children: plan.parts.map((part) => {
+    !collapsed ? hasHunks ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react5.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-body", ...surfaceProps(tone, "fileCardBody"), children: plan.parts.map((part) => {
         if (part.type === "gap") return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(GapBand, { gap: part.gap, t }, part.key);
         return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
           InlineHunk,
@@ -22510,7 +22881,7 @@ function InlineDiffCard(props) {
           part.key
         );
       }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-foot", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "did-foot", ...surfaceProps(tone, "fileCardBody"), children: [
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: sourceLabel(model.source, t) }),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "did-grow" }),
         hidden > 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: t("inlineMore", { n: hidden }) }) : null,
@@ -22520,27 +22891,27 @@ function InlineDiffCard(props) {
   ] }) });
 }
 function DiffModal({ t }) {
-  const payload2 = (0, import_react4.useSyncExternalStore)(subscribeDiffModal, getDiffModal, getDiffModal);
+  const payload2 = (0, import_react5.useSyncExternalStore)(subscribeDiffModal, getDiffModal, getDiffModal);
   const settings = useSettingsSnapshot();
-  const [tab, setTab] = (0, import_react4.useState)("hunks");
-  const [portalHost, setPortalHost] = (0, import_react4.useState)(null);
-  const dialogRef = (0, import_react4.useRef)(null);
+  const [tab, setTab] = (0, import_react5.useState)("hunks");
+  const [portalHost, setPortalHost] = (0, import_react5.useState)(null);
+  const dialogRef = (0, import_react5.useRef)(null);
   const callId = payload2 === null ? null : payload2.callId;
-  const languageId = (0, import_react4.useMemo)(
+  const languageId = (0, import_react5.useMemo)(
     () => payload2 === null ? null : detectLanguage(payload2.absolutePath ?? payload2.filePath, payload2.diff?.afterText ?? payload2.diff?.beforeText ?? ""),
     [payload2]
   );
-  const highlighter = (0, import_react4.useMemo)(
+  const highlighter = (0, import_react5.useMemo)(
     () => settings.syntaxHighlight !== false && languageId !== null && payload2?.diff !== null && payload2?.diff !== void 0 ? getDiffHighlighter(payload2.diff, languageId) : null,
     [payload2, languageId, settings.syntaxHighlight]
   );
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     setPortalHost(document.body);
   }, []);
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     setTab("hunks");
   }, [callId]);
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     if (payload2 === null) return;
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
@@ -22551,7 +22922,7 @@ function DiffModal({ t }) {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [payload2]);
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     if (payload2 === null) return;
     dialogRef.current?.focus?.();
   }, [payload2]);
@@ -22564,10 +22935,12 @@ function DiffModal({ t }) {
   const oldLines = diff2.oldLineCount;
   const newLines = diff2.newLineCount;
   const close = () => closeDiffModal();
-  const overlay = /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react4.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay-root", "data-open": "true", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay", onClick: close, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  const overlay = /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_react5.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay-root", "data-open": "true", "data-enter": "", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "did-overlay", ...backdropProxyProps(settings, "diffModal"), onClick: close, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
     "div",
     {
       className: "did-dialog",
+      "data-enter": "",
+      ...surfaceProps(settings, "diffModal"),
       role: "dialog",
       "aria-modal": "true",
       "aria-label": t("modal.title"),
@@ -22637,6 +23010,97 @@ function DiffModal({ t }) {
   return portalHost === null ? overlay : (0, import_react_dom.createPortal)(overlay, portalHost);
 }
 
+// src/client/glass-filters.js
+var FILTER_DEFS_ID = "dsh-inline-diff-glass-filters";
+var REFRACTION_GATE_CLASS = "did-glass-refract-ok";
+var MIN_CHROMIUM_MAJOR = 152;
+var FILTERS_MARKUP = `
+<defs>
+  <filter id="did-glass-refract-sm" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.010 0.013" numOctaves="2" seed="7" result="noise" />
+    <feGaussianBlur in="noise" stdDeviation="1.4" result="soft" />
+    <feDisplacementMap in="SourceGraphic" in2="soft" scale="9" xChannelSelector="R" yChannelSelector="G" />
+  </filter>
+  <filter id="did-glass-refract-md" x="-18%" y="-18%" width="136%" height="136%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.009 0.011" numOctaves="2" seed="13" result="noise" />
+    <feGaussianBlur in="noise" stdDeviation="1.8" result="soft" />
+    <feDisplacementMap in="SourceGraphic" in2="soft" scale="18" xChannelSelector="R" yChannelSelector="G" />
+  </filter>
+  <filter id="did-glass-refract-lg" x="-22%" y="-22%" width="144%" height="144%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.0075 0.0095" numOctaves="3" seed="21" result="noise" />
+    <feGaussianBlur in="noise" stdDeviation="2.2" result="soft" />
+    <feDisplacementMap in="SourceGraphic" in2="soft" scale="30" xChannelSelector="R" yChannelSelector="G" />
+  </filter>
+</defs>
+`;
+function chromiumMajor(userAgent = globalThis.navigator?.userAgent) {
+  if (typeof userAgent !== "string") return 0;
+  const match = userAgent.match(/Chrom(?:e|ium)\/(\d+)/);
+  if (match === null) return 0;
+  const major = Number(match[1]);
+  return Number.isFinite(major) ? major : 0;
+}
+function supportsBackdropRefraction(userAgent = globalThis.navigator?.userAgent, css2 = globalThis.CSS) {
+  try {
+    if (chromiumMajor(userAgent) < MIN_CHROMIUM_MAJOR) return false;
+    if (css2 === void 0 || css2 === null || typeof css2.supports !== "function") return false;
+    return css2.supports("backdrop-filter", "url(#did-glass-refract-sm)") === true || css2.supports("-webkit-backdrop-filter", "url(#did-glass-refract-sm)") === true;
+  } catch {
+    return false;
+  }
+}
+function installGlassRefraction() {
+  const doc = globalThis.document;
+  if (doc === void 0 || doc === null) return () => {
+  };
+  const root = doc.documentElement;
+  const host = doc.body ?? root;
+  if (root === null || root === void 0 || host === null || host === void 0) return () => {
+  };
+  let container = null;
+  try {
+    if (doc.getElementById(FILTER_DEFS_ID) === null) {
+      container = doc.createElement("svg");
+      container.id = FILTER_DEFS_ID;
+      container.setAttribute("width", "0");
+      container.setAttribute("height", "0");
+      container.setAttribute("aria-hidden", "true");
+      container.setAttribute("focusable", "false");
+      container.setAttribute("style", "position:absolute;width:0;height:0;pointer-events:none");
+      container.innerHTML = FILTERS_MARKUP;
+      host.appendChild(container);
+    }
+  } catch {
+    container = null;
+  }
+  let gated = false;
+  try {
+    if (supportsBackdropRefraction()) {
+      root.classList.add(REFRACTION_GATE_CLASS);
+      gated = true;
+    } else {
+      root.classList.remove(REFRACTION_GATE_CLASS);
+    }
+  } catch {
+  }
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      if (container !== null && container.isConnected) container.remove();
+      else doc.getElementById(FILTER_DEFS_ID)?.remove();
+    } catch {
+    }
+    if (gated) {
+      try {
+        root.classList.remove(REFRACTION_GATE_CLASS);
+      } catch {
+      }
+    }
+  };
+}
+
 // src/client/i18n.js
 function hostLanguageKind(hostLanguage) {
   if (typeof hostLanguage !== "string") return void 0;
@@ -22650,7 +23114,6 @@ function hostLanguageKind(hostLanguage) {
 function resolveLanguage(setting, hostLanguage) {
   if (setting === "zh") return "zh";
   if (setting === "en") return "en";
-  if (setting !== "auto") return DEFAULT_LANGUAGE;
   const host = hostLanguageKind(hostLanguage);
   if (host === "zh") return "zh";
   if (host === "en") return "en";
@@ -22906,9 +23369,13 @@ body[data-dsh-inline-diff-appearance='light'] {
 }
 [data-shell-tone='dark'] {
   --did-shell-base: #101216;
-  --did-surface-1: var(--dsw-alias-bg-layer-1, #1a1c22);
-  --did-surface-2: var(--dsw-alias-bg-layer-2, #202329);
-  --did-surface-elevated: var(--dsw-alias-bg-layer-2, #202329);
+  /* 强制深色外壳时，表面底色默认使用中性深色而不是主题 token：浅色外观（以及
+     第三方浅色主题）下 --dsw-alias-bg-layer-* 是浅色，用主题 token 会把「深色
+     外壳」做成白底 + 浅色文字（不可读）。下面的外观作用域规则在深色外观下再把
+     主题的深色表面色相接回来，兼顾「强制基调」与「跟随主题」。 */
+  --did-surface-1: #1a1c22;
+  --did-surface-2: #202329;
+  --did-surface-elevated: #202329;
   --did-fg-primary: #eef1f8;
   --did-fg-secondary: #c3cade;
   --did-fg-tertiary: #94a1bc;
@@ -22916,6 +23383,19 @@ body[data-dsh-inline-diff-appearance='light'] {
   --did-border-2: rgba(151, 169, 216, 0.42);
   --did-seg-bg: var(--dsw-alias-bg-layer-2, #202329);
   --did-seg-active: color-mix(in srgb, var(--dsw-alias-brand-primary, #5686fe) 30%, #1e2128);
+}
+/* 强制外壳色调与当前外观一致时，沿用主题自己的表面色相（第三方主题也能带出自己的
+   蓝/紫/金等色调）；外观相反时保持上面的中性强制色，保证文字对比度不被浅色 token
+   冲掉。 */
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='dark'] {
+  --did-surface-1: var(--dsw-alias-bg-layer-1, #1a1c22);
+  --did-surface-2: var(--dsw-alias-bg-layer-2, #202329);
+  --did-surface-elevated: var(--dsw-alias-bg-layer-2, #202329);
+}
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
+  --did-surface-1: var(--dsw-alias-bg-layer-1, #f4f6f9);
+  --did-surface-2: var(--dsw-alias-bg-layer-2, #edf0f4);
+  --did-surface-elevated: var(--dsw-alias-bg-layer-2, #edf0f4);
 }
 [data-inner-tone='light'] {
   --did-io-bg: #f8f9fb;
@@ -23903,6 +24383,962 @@ body[data-dsh-inline-diff-appearance='light'] {
 }
 .did-langs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .did-langs .did-lang { font-size: 10.5px; line-height: 18px; }
+
+/* ============================================================================
+   ---- 外观效果：原生 / 磨砂玻璃 / 液态玻璃 ----
+   ----------------------------------------------------------------------------
+   本区段是「外观效果」的唯一 CSS 实现，**只追加、不改上面的任何旧规则**：
+   所有规则都以 [data-fx='glass'|'liquid'] / [data-liquid-mode] / [data-fx-root='true']
+   为前缀，因此全 native（默认）时一条都不会命中，1.3.0 的既有外观零回归。
+
+   DOM 契约（surfaces.js 与 .team/glass-contract.md）：
+     · 每个可视表面元素带 data-fx（native/glass/liquid 三值都写）、data-fx-surface；
+       liquid 时另有 data-liquid-mode="clear|frosted"；
+       内联变量 --did-fx-alpha（0.05–1，无单位）与 --did-fx-blur（px）。
+     · 卡片根 .did-card / .enhanced-tool 在任一子表面非 native 时带 data-fx-root="true"。
+     · 9 个表面：fileCardHeader / fileCardBody / diffModal / commandHeader /
+       commandIO / toolHeader / toolIO / readRangeChip / settingsPanel。
+
+   实现要点：
+     1) 材质画在**子表面自己**身上（头部 / IO / 差异区 / 弹窗 / 徽标）。卡片根在
+        fx-root 上下文里交出底色与边框，否则子表面的 backdrop-filter 只能看到卡片
+        自己的不透明底，看不到背后的页面壁纸（§4）；
+     2) fx-root 上下文里的 native 子表面把原底色补回来（§4.2），保证“一半玻璃
+        一半原生”自然。无 data-fx-root 时一律命中不到这些规则；
+     3) 液态玻璃的折射使用 Chromium 的 backdrop-filter: url(#…)（研究结论：折射
+        必须与 blur 写在**同一条** backdrop-filter 声明里，嵌套 backdrop-filter 会被
+        忽略；@supports 对 url() 会误报，所以由 index.jsx 启动时探测并给 <html>
+        加 .did-glass-refract-ok 门控类）。不支持折射的引擎自动退回“只有模糊”的材质；
+     4) 不支持 backdrop-filter 的引擎（@supports not …）退回更高不透明度的半透明
+        底色，保证可读；prefers-reduced-transparency / forced-colors 同理降级（§7）；
+     5) 性能：backdrop-filter 只挂在真正 glass/liquid 的表面元素上，不加
+        will-change；卡片根只画一条 0.5px 轮廓（::after），不做模糊。
+
+   主题：材质底色全部来自现有 --did-* token（--did-surface-1 / --did-io-bg /
+   --did-dialog-surface / --did-surface-elevated），高光/内阴影按深浅外观与每张卡片
+   自己的外壳色调（data-shell-tone）切换；文字颜色一律不动，靠半透明底色保证可读。
+   ========================================================================== */
+
+/* ---- 外观效果 1. 派生变量（材质参数） --------------------------------- */
+[data-fx] {
+  /* 用户可调项：markup 以内联 style 写入；这里给兜底值，避免纯 DOM 侧
+     （read-range-dom.js）漏写时 var() 解析失败把整条声明丢掉。 */
+  --did-fx-alpha: 0.55;
+  --did-fx-blur: 14px;
+
+  /* 系数：磨砂玻璃 = 1:1；液态玻璃两种模式在 §1.2 覆盖 */
+  --did-fx-alpha-k: 1;
+  --did-fx-blur-k: 1;
+
+  /* 最终生效的透明度（0.02–1）与模糊半径 */
+  --did-fx-alpha-eff: clamp(0.02, calc(var(--did-fx-alpha) * var(--did-fx-alpha-k)), 1);
+  --did-fx-blur-eff: calc(var(--did-fx-blur) * var(--did-fx-blur-k));
+  /* 可读性底衬：代码类表面额外叠一小段固定浓度。公式 α' = α + boost × (1 − α)
+     随滑杆线性收敛（α=1 时仍是 1、α 越小增补越多），所以滑杆始终有效，只是避免
+     用户把透明度拉到很低时大片代码直接糊在壁纸上。逐表面取值见本节下方。 */
+  --did-fx-alpha-boost: 0;
+  --did-fx-alpha-final: calc(var(--did-fx-alpha-eff) + var(--did-fx-alpha-boost) * (1 - var(--did-fx-alpha-eff)));
+
+  /* backdrop-filter 调色：base 是“原始值”，k 是模式/外观的乘数，分开声明是为了
+     让浅色外观覆盖 base 时不会把 clear/frosted 的相对差异冲掉。 */
+  --did-fx-sat-base: 1.6;
+  --did-fx-bright-base: 1.04;
+  --did-fx-sat-k: 1;
+  --did-fx-bright-k: 1;
+  --did-fx-sat: calc(var(--did-fx-sat-base) * var(--did-fx-sat-k));
+  --did-fx-bright: calc(var(--did-fx-bright-base) * var(--did-fx-bright-k));
+
+  /* 材质底色来源：外壳类表面用主题表面色，代码/IO 类表面在下面换成代码块底色。
+     用 rgb(from …) 相对色语法在“用户透明度”上重新取 alpha，因此主题 token 自带
+     的透明度不会叠加。 */
+  --did-fx-tint-base: var(--did-surface-1);
+
+  /* 深浅外观共用的高光/内阴影色板（浅色外观在 §1.3 覆盖） */
+  --did-fx-sheen-strong: rgb(255 255 255 / 0.55);
+  --did-fx-sheen-mid: rgb(255 255 255 / 0.16);
+  --did-fx-sheen-soft: rgb(255 255 255 / 0.30);
+  --did-fx-shade: rgb(0 0 0 / 0.20);
+  --did-fx-hairline: rgb(255 255 255 / 0.13);
+  --did-fx-rim-k: 1;
+  --did-fx-rim-opacity: min(1, calc(0.95 * var(--did-fx-rim-k)));
+  --did-fx-noise-opacity: 0.12;
+
+  /* 细色散：液态玻璃边缘极轻的冷暖分色（真正色散做不到，用两条 1px 半透明线近似） */
+  --did-fx-fringe-a: rgb(130 210 255 / 0.10);
+  --did-fx-fringe-b: rgb(255 150 210 / 0.08);
+
+  /* 材质的多层背景（glass / liquid 各一套；浅色外观在 §1.3 换更淡的一套） */
+  --did-fx-glass-image:
+    linear-gradient(180deg, rgb(255 255 255 / 0.055) 0%, rgb(255 255 255 / 0) 58%),
+    linear-gradient(112deg, rgb(255 255 255 / 0.04) 0%, rgb(255 255 255 / 0) 42%);
+  --did-fx-bloom: rgb(255 255 255 / calc(0.06 + 0.12 * var(--did-fx-alpha-final)));
+  --did-fx-liquid-image:
+    radial-gradient(120% 90% at 8% -28%, var(--did-fx-bloom), rgb(255 255 255 / 0) 56%),
+    linear-gradient(112deg, rgb(255 255 255 / 0.10) 0%, rgb(255 255 255 / 0.028) 30%, rgb(255 255 255 / 0) 56%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.05) 0%, rgb(255 255 255 / 0) 62%);
+
+  /* 单独浮层（差异弹窗 / 设置面板 / 行范围徽标）的投影；卡片内子表面不投影，
+     保持与原生一致的外轮廓。 */
+  --did-fx-outer: 0 0 0 0 transparent;
+  --did-fx-drop: rgb(0 0 0 / 0.22);
+}
+
+/* 材质底色来源：差异区 / IO 用官方代码块底色；弹窗用弹层底色；设置面板用抬升表面。 */
+[data-fx-surface='fileCardBody'],
+[data-fx-surface='commandIO'],
+[data-fx-surface='toolIO'] { --did-fx-tint-base: var(--did-io-bg); }
+[data-fx-surface='diffModal'] { --did-fx-tint-base: var(--did-dialog-surface); }
+[data-fx-surface='settingsPanel'] { --did-fx-tint-base: var(--did-surface-elevated); }
+/* 逐表面的可读性底衬：代码/IO 区最需要（大片文字直接压在壁纸上），头部等小面积
+   元素只需要一点点，徽标更小、更要“浮”起来所以稍高。 */
+[data-fx-surface='fileCardHeader'],
+[data-fx-surface='commandHeader'],
+[data-fx-surface='toolHeader'] { --did-fx-alpha-boost: 0.06; }
+[data-fx-surface='fileCardBody'],
+[data-fx-surface='commandIO'],
+[data-fx-surface='toolIO'] { --did-fx-alpha-boost: 0.22; }
+[data-fx-surface='diffModal'] { --did-fx-alpha-boost: 0.08; }
+[data-fx-surface='settingsPanel'] { --did-fx-alpha-boost: 0.2; }
+[data-fx-surface='readRangeChip'] { --did-fx-alpha-boost: 0.34; }
+/* 卡片底部 foot 虽然也归 fileCardBody 表面，但原底色是外壳色，保持外壳色调。 */
+.did-card > .did-foot[data-fx-surface='fileCardBody'] { --did-fx-tint-base: var(--did-surface-1); }
+/* “与外壳一致”的内部配色把 --did-io-bg 设成 transparent；相对色语法从 transparent
+   取通道会退化成黑色，浅色外观里会出现黑玻璃。这种组合改回外壳色做材质。 */
+[data-inner-tone='same'] [data-fx-surface='fileCardBody'],
+[data-inner-tone='same'] [data-fx-surface='commandIO'],
+[data-inner-tone='same'] [data-fx-surface='toolIO'] { --did-fx-tint-base: var(--did-surface-1); }
+
+/* 外壳色调与当前外观相反时（浅色外观里把卡片外壳设为深色，或深色外观里设为浅色），
+   头部是一小块半透明材质，13px 标题在页面背景上容易掉到 WCAG AA 以下；把这一情形
+   的头部底衬透明度提高一档，保证深底浅字/浅底深字仍然清晰。用户手动调低的透明度
+   仍按 alpha 系数生效，这里只做固定比例的可读性补偿。 */
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='dark'] [data-fx-surface='fileCardHeader'],
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='dark'] [data-fx-surface='commandHeader'],
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='dark'] [data-fx-surface='toolHeader'],
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] [data-fx-surface='fileCardHeader'],
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] [data-fx-surface='commandHeader'],
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] [data-fx-surface='toolHeader'] {
+  --did-fx-alpha-boost: 0.32;
+}
+
+/* 单独浮层的投影（与原生 1.3.0 的弹窗阴影保持同一观感）。 */
+[data-fx-surface='diffModal'],
+[data-fx-surface='settingsPanel'] {
+  --did-fx-outer: 0 18px 60px color-mix(in srgb, var(--did-fg-primary) 12%, transparent);
+}
+[data-fx-surface='settingsPanel'].did-settings-page {
+  --did-fx-outer: 0 12px 36px -18px color-mix(in srgb, var(--did-fg-primary) 18%, transparent);
+}
+[data-fx-surface='readRangeChip'] { --did-fx-outer: 0 1px 2px var(--did-fx-drop); }
+
+/* ---- 外观效果 1.2. 液态模式系数与玻璃参数 ----------------------------- */
+[data-fx='liquid'] {
+  --did-fx-sat-base: 1.8;
+  --did-fx-bright-base: 1.05;
+}
+/* frosted（带一点模糊）= 用户模糊 ×1、材质更浓稠、饱和度略收（研究建议 1.15 / 0.95） */
+[data-fx='liquid'][data-liquid-mode='frosted'] {
+  --did-fx-alpha-k: 1.15;
+  --did-fx-blur-k: 1;
+  --did-fx-sat-k: 0.95;
+}
+/* clear（完全通透）= 模糊 ×0.12（14px → 1.7px）、材质更薄、饱和度更高（接近透镜） */
+[data-fx='liquid'][data-liquid-mode='clear'] {
+  --did-fx-alpha-k: 0.5;
+  --did-fx-blur-k: 0.12;
+  --did-fx-sat-k: 1.14;
+  --did-fx-bright-k: 0.97;
+  --did-fx-rim-k: 1.12;
+  --did-fx-noise-opacity: 0.08;
+}
+
+/* ---- 外观效果 1.3. 浅色外观 / 每张卡片外壳色调的材质色板 --------------
+   选择器同时覆盖两种情况：
+     · body[data-dsh-inline-diff-appearance='light'] —— 宿主当前浅色外观；
+     · [data-shell-tone='light'|'dark'] —— 设置里为单张卡片指定的外壳色调。
+   顺序保证：卡片自己的色调覆盖宿主外观（浅色外观里的深色外壳卡片仍用白高光）。 */
+body[data-dsh-inline-diff-appearance='light'] [data-fx],
+body[data-dsh-inline-diff-appearance='light'] [data-fx-surface],
+[data-shell-tone='light'] [data-fx],
+[data-shell-tone='light'][data-fx] {
+  --did-fx-sat-base: 1.35;
+  --did-fx-bright-base: 1;
+  --did-fx-sheen-strong: rgb(255 255 255 / 0.9);
+  --did-fx-sheen-mid: rgb(255 255 255 / 0.55);
+  --did-fx-sheen-soft: rgb(255 255 255 / 0.7);
+  --did-fx-shade: rgb(30 40 60 / 0.12);
+  --did-fx-hairline: rgb(20 24 32 / 0.14);
+  --did-fx-fringe-a: rgb(90 160 220 / 0.07);
+  --did-fx-fringe-b: rgb(220 120 170 / 0.05);
+  --did-fx-noise-opacity: 0.09;
+  --did-fx-glass-image:
+    linear-gradient(180deg, rgb(255 255 255 / 0.30) 0%, rgb(255 255 255 / 0) 60%),
+    linear-gradient(112deg, rgb(255 255 255 / 0.22) 0%, rgb(255 255 255 / 0) 45%);
+  --did-fx-bloom: rgb(255 255 255 / calc(0.18 + 0.18 * var(--did-fx-alpha-final)));
+  --did-fx-liquid-image:
+    radial-gradient(120% 90% at 8% -28%, var(--did-fx-bloom), rgb(255 255 255 / 0) 58%),
+    linear-gradient(112deg, rgb(255 255 255 / 0.34) 0%, rgb(255 255 255 / 0.10) 32%, rgb(255 255 255 / 0) 58%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.22) 0%, rgb(255 255 255 / 0) 62%);
+  --did-fx-drop: rgb(30 40 60 / 0.22);
+}
+[data-shell-tone='dark'] [data-fx],
+[data-shell-tone='dark'][data-fx] {
+  --did-fx-sat-base: 1.8;
+  --did-fx-bright-base: 1.05;
+  --did-fx-sheen-strong: rgb(255 255 255 / 0.55);
+  --did-fx-sheen-mid: rgb(255 255 255 / 0.16);
+  --did-fx-sheen-soft: rgb(255 255 255 / 0.30);
+  --did-fx-shade: rgb(0 0 0 / 0.20);
+  --did-fx-hairline: rgb(255 255 255 / 0.13);
+  --did-fx-fringe-a: rgb(130 210 255 / 0.10);
+  --did-fx-fringe-b: rgb(255 150 210 / 0.08);
+  --did-fx-noise-opacity: 0.12;
+  --did-fx-glass-image:
+    linear-gradient(180deg, rgb(255 255 255 / 0.055) 0%, rgb(255 255 255 / 0) 58%),
+    linear-gradient(112deg, rgb(255 255 255 / 0.04) 0%, rgb(255 255 255 / 0) 42%);
+  --did-fx-bloom: rgb(255 255 255 / calc(0.06 + 0.12 * var(--did-fx-alpha-final)));
+  --did-fx-liquid-image:
+    radial-gradient(120% 90% at 8% -28%, var(--did-fx-bloom), rgb(255 255 255 / 0) 56%),
+    linear-gradient(112deg, rgb(255 255 255 / 0.10) 0%, rgb(255 255 255 / 0.028) 30%, rgb(255 255 255 / 0) 56%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.05) 0%, rgb(255 255 255 / 0) 62%);
+  --did-fx-drop: rgb(0 0 0 / 0.22);
+}
+
+/* ---- 外观效果 2. 磨砂玻璃（glass） ------------------------------------ */
+[data-fx='glass'] {
+  position: relative;
+  isolation: isolate;
+  /* 三层声明是逐级增强的回退链：极旧浏览器只拿实体底色（至少可读），支持
+     color-mix 的拿半透明材质，支持相对色语法的按滑杆透明度精确取 alpha。
+     （相对色语法可以直接用 clamp() 得到的数字当 alpha，不受 color-mix 百分比限制。） */
+  background-color: var(--did-fx-tint-base);
+  background-color: color-mix(in srgb, var(--did-fx-tint-base) calc(var(--did-fx-alpha-final) * 100%), transparent);
+  background-color: rgb(from var(--did-fx-tint-base) r g b / var(--did-fx-alpha-final));
+  background-image: var(--did-fx-glass-image);
+  background-repeat: no-repeat;
+  -webkit-backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright));
+  backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright));
+  /* 细高光边框 + 玻璃厚度：顶部 1px 高光、底部 1px 暗边、四周 0.5px 发丝线，
+     再叠两条内侧的大半径柔光，让薄片看起来有厚度。 */
+  box-shadow:
+    inset 0 0 0 0.5px var(--did-fx-hairline),
+    inset 0 1px 0 0 var(--did-fx-sheen-mid),
+    inset 0 -1px 0 0 var(--did-fx-shade),
+    inset 0 14px 26px -22px var(--did-fx-sheen-soft),
+    inset 0 -20px 30px -26px var(--did-fx-shade),
+    var(--did-fx-outer);
+}
+/* 头部是可点击的折叠开关，旧规则 .did-head:hover 用 background 简写覆盖底色
+   （还会把 background-image 一起清掉）；玻璃头必须把材质原样补回去，
+   否则悬停瞬间会闪成全透明。 */
+.did-head[data-fx='glass']:hover,
+.did-head[data-fx='liquid']:hover,
+.enhanced-head[data-fx='glass']:hover,
+.enhanced-head[data-fx='liquid']:hover {
+  background-color: rgb(from var(--did-fx-tint-base) r g b / min(1, calc(var(--did-fx-alpha-final) + 0.06)));
+  background-image: var(--did-fx-glass-image);
+}
+.did-head[data-fx='liquid']:hover,
+.enhanced-head[data-fx='liquid']:hover { background-image: var(--did-fx-liquid-image); }
+
+/* ---- 外观效果 3. 液态玻璃（liquid） ----------------------------------- */
+/* 材质本体：半透明底色 + 三层背景（左上镜面泛光 / 斜向光泽 / 上沿提亮），
+   backdrop-filter 负责模糊与调色；折射在 §3.2 的门控类下追加到同一条声明里。 */
+[data-fx='liquid'] {
+  position: relative;
+  isolation: isolate;
+  background-color: var(--did-fx-tint-base);
+  background-color: color-mix(in srgb, var(--did-fx-tint-base) calc(var(--did-fx-alpha-final) * 100%), transparent);
+  background-color: rgb(from var(--did-fx-tint-base) r g b / var(--did-fx-alpha-final));
+  background-image: var(--did-fx-liquid-image);
+  background-repeat: no-repeat;
+  -webkit-backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02);
+  backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02);
+  /* 边缘 specular + 厚度内阴影 + 极轻色散（色散变量在 §1 定义、浅色外观在 §1.3 覆盖）。 */
+  box-shadow:
+    inset 0 0.5px 0 0 var(--did-fx-sheen-strong),
+    inset 0 -0.5px 0 0 var(--did-fx-sheen-mid),
+    inset 0.5px 0 0 0 var(--did-fx-sheen-mid),
+    inset -0.5px 0 0 0 var(--did-fx-sheen-mid),
+    inset 0 1px 0 0 var(--did-fx-fringe-a),
+    inset 0 -1px 0 0 var(--did-fx-fringe-b),
+    inset 0 2px 4px -2px var(--did-fx-shade),
+    inset 0 -28px 36px -32px var(--did-fx-sheen-soft),
+    inset 0 24px 32px -34px var(--did-fx-shade),
+    var(--did-fx-outer);
+}
+/* 噪声层：消掉“塑料感”与 8bit 色带。负 z-index + isolation 让它在材质底色之上、
+   内容之下，因此不需要改动任何子元素的层级（也绝不会拦截点击）。 */
+[data-fx='liquid']::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: var(--did-fx-noise-opacity);
+  mix-blend-mode: overlay;
+}
+/* 边缘 specular 环：conic 渐变 + mask 挖空成 1px 描边。负 z-index 让它压在材质
+   之上、内容之下；pointer-events:none 保证不拦点击。 */
+[data-fx='liquid']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  padding: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(from 215deg at 50% 50%,
+      rgb(255 255 255 / 1)    0deg,
+      rgb(255 255 255 / 0.28) 38deg,
+      rgb(255 255 255 / 0.05) 112deg,
+      rgb(255 255 255 / 0.5)  172deg,
+      rgb(255 255 255 / 0.06) 232deg,
+      rgb(255 255 255 / 0.62) 296deg,
+      rgb(255 255 255 / 1)    360deg);
+  opacity: var(--did-fx-rim-opacity);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+}
+
+/* ---- 外观效果 3.2. 折射（Chromium 专有，门控启用） --------------------
+   结论来自 .team/liquid-glass/NOTES.md：
+     · Chromium 支持 backdrop-filter 里的 url(#svgFilter)（真·位移折射）；
+     · 折射必须与 blur/saturate 写在**同一条** backdrop-filter 里（嵌套会被忽略）；
+     · 一旦 url() 不被识别，整条 backdrop-filter 失效（连 blur 都没了），
+       所以只用 index.jsx 探测通过后挂在 <html> 上的 .did-glass-refract-ok 门控；
+     · 挡位按表面尺寸选：徽标 sm（scale 9）、卡片/弹窗默认 md（scale 18）、
+       clear 模式 lg（scale 30，透镜扭曲更明显）。
+   不支持的引擎（Safari/Firefox/未探测通过）自然停在“只有模糊”的材质上。 */
+.did-glass-refract-ok [data-fx='liquid'] {
+  -webkit-backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02) url(#did-glass-refract-md);
+          backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02) url(#did-glass-refract-md);
+}
+.did-glass-refract-ok [data-fx='liquid'][data-liquid-mode='clear'] {
+  -webkit-backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02) url(#did-glass-refract-lg);
+          backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02) url(#did-glass-refract-lg);
+}
+/* 小徽标用 sm 挡位：小尺寸表面用大位移会被“吃掉”边缘（研究建议模糊 ≤10px）。
+   选择器与上面的 clear 规则同权重、放在其后，保证徽标在 clear 模式下也用 sm 而不是 lg。 */
+.did-glass-refract-ok [data-fx='liquid'][data-fx-surface='readRangeChip'] {
+  -webkit-backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02) url(#did-glass-refract-sm);
+          backdrop-filter: blur(var(--did-fx-blur-eff)) saturate(var(--did-fx-sat)) brightness(var(--did-fx-bright)) contrast(1.02) url(#did-glass-refract-sm);
+}
+
+/* ---- 外观效果 4. 卡片根的 fx-root 上下文 ------------------------------
+   卡片根交出底色与边框，让子表面的 backdrop-filter 能采到页面壁纸；轮廓由
+   一条 0.5px 的覆盖环（::after）负责，颜色沿用卡片原边框色，所以“全玻璃卡片”
+   仍然有一圈完整、贴圆角的发丝线。 */
+[data-fx-root='true'] {
+  --did-fx-card-ring: color-mix(in srgb, var(--did-border-2) 45%, var(--did-border-1));
+}
+.did-card[data-fx-root='true'],
+.enhanced-tool[data-fx-root='true'] {
+  position: relative;
+  isolation: isolate;
+  background-color: transparent;
+  background-image: none;
+  /* border-color 置透明而不是删边框：宽度保留，布局与 native 完全一致。 */
+  border-color: transparent;
+}
+.did-card[data-fx-root='true']::after,
+.enhanced-tool[data-fx-root='true']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 0.5px var(--did-fx-card-ring);
+}
+/* 出错态沿用卡片原本的红边语义。 */
+.did-card[data-fx-root='true'][data-state='error'] {
+  --did-fx-card-ring: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, var(--did-border-1));
+}
+/* .enhanced-tool 顶部有 4px 内边距（原生时由卡片自己的不透明底填充）；fx-root 下
+   卡片根透明，这 4px 会透出壁纸形成一条“断层”。把这段内边距移进头部，让材质
+   覆盖到卡片顶边，总高度不变（折叠态同理把底部内边距移进头部）。 */
+.enhanced-tool[data-fx-root='true'] { padding-top: 0; }
+.enhanced-tool[data-fx-root='true'] > .enhanced-head { padding-top: 5px; }
+.enhanced-tool[data-fx-root='true'][data-body='false'] { padding-bottom: 0; }
+.enhanced-tool[data-fx-root='true'][data-body='false'] > .enhanced-head { padding-bottom: 5px; }
+
+/* ---- 外观效果 4.2. fx-root 里 native 子表面补回原底色 ------------------
+   只补“原本由卡片根提供”的那一层：
+     · 头部（.did-head / .enhanced-head）原本透明，依赖卡片根的
+       --did-shell-base + --did-surface-1 渐变；
+     · 差异内容区 / IO 面板原本就是 --did-io-bg，底部 foot 是 --did-surface-1，
+       这里显式写回，保证“一半玻璃一半原生”时边界自然、底色不被半透明层影响。 */
+.did-card[data-fx-root='true'] > .did-head[data-fx='native'] {
+  background-color: var(--did-shell-base);
+  background-image: linear-gradient(var(--did-surface-1), var(--did-surface-1));
+}
+/* 原生头在 fx-root 下仍要保留悬停高亮：旧 .did-head:hover 只叠 4% 前景色，
+   在透明卡片根上会变成“透出壁纸”，所以这里把底色和悬停色一起补回来。 */
+.did-card[data-fx-root='true'] > .did-head[data-fx='native']:hover {
+  background-color: var(--did-shell-base);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--did-fg-primary) 5%, var(--did-surface-1)),
+    color-mix(in srgb, var(--did-fg-primary) 5%, var(--did-surface-1)));
+}
+.did-card[data-fx-root='true'] > .did-body[data-fx='native'] { background: var(--did-io-bg); }
+.did-card[data-fx-root='true'] > .did-foot[data-fx='native'] { background: var(--did-surface-1); }
+.enhanced-tool[data-fx-root='true'] > .enhanced-head[data-fx='native'] {
+  background-color: var(--did-shell-base);
+  background-image: linear-gradient(var(--did-surface-1), var(--did-surface-1));
+}
+.enhanced-tool[data-fx-root='true'] > .enhanced-io[data-fx='native'] { background: var(--did-io-bg); }
+/* 内部配色 =「与外壳一致」时 --did-io-bg 是 transparent；在 fx-root 卡片里卡片根
+   已经透明，native 子表面必须补回外壳表面色，否则会直接透出页面背景（混合模式
+   “玻璃头部 + 原生内容区”会露出壁纸）。 */
+.did-card[data-fx-root='true'][data-inner-tone='same'] > .did-body[data-fx='native'],
+.enhanced-tool[data-fx-root='true'][data-inner-tone='same'] > .enhanced-io[data-fx='native'] {
+  background: var(--did-surface-1);
+}
+
+/* ---- 外观效果 4.3. 卡片内材质表面的圆角贴合 ----------------------------
+   卡片根有 --dsw-radius-lg 圆角 + overflow:hidden；材质表面自己再取一次首/尾
+   圆角，边缘高光与色散环才能沿圆角走（否则伪元素描边是直角、在四个角被父级
+   裁断）。中间位置的表面（差异 body / IO）保持直角，与原生一致。
+   只作用于非 native 表面：native 子表面继续完全由父级裁剪，保证零视觉差异。 */
+.did-card > [data-fx='glass']:first-child,
+.did-card > [data-fx='liquid']:first-child,
+.enhanced-tool > [data-fx='glass']:first-child,
+.enhanced-tool > [data-fx='liquid']:first-child {
+  border-start-start-radius: inherit;
+  border-start-end-radius: inherit;
+}
+.did-card > [data-fx='glass']:last-child,
+.did-card > [data-fx='liquid']:last-child,
+.enhanced-tool > [data-fx='glass']:last-child,
+.enhanced-tool > [data-fx='liquid']:last-child {
+  border-end-start-radius: inherit;
+  border-end-end-radius: inherit;
+}
+
+/* ---- 外观效果 5. 玻璃/液态表面内部的吸顶横条 --------------------------
+   差异卡片与放大弹窗里的 hunk 表头（.did-bar）原本是不透明的
+   “品牌色 9% + 代码底色”；当承载它的内容区是玻璃时把它改成半透明，
+   否则玻璃材质会被这条横条整块盖住。其它内部小元素（行号、gap、notice）
+   本来就是半透明色，不需要处理。 */
+.did-body[data-fx='glass'] .did-bar,
+.did-body[data-fx='liquid'] .did-bar,
+.did-dialog[data-fx='glass'] .did-bar,
+.did-dialog[data-fx='liquid'] .did-bar {
+  /* 底色取 --did-fx-tint-base（内部配色 = “与外壳一致”时它已被换成外壳色，
+     避免 --did-io-bg: transparent 被相对色语法解析成黑色）。 */
+  background: color-mix(in srgb,
+    var(--dsw-alias-brand-primary) 9%,
+    rgb(from var(--did-fx-tint-base) r g b / 0.74));
+}
+
+/* ---- 外观效果 6. 单独浮层：差异弹窗 / 设置面板 / 行范围徽标 ------------ */
+/* 差异弹窗（.did-dialog）整窗即材质面：头部/底部/栏头原本是不透明外壳色，
+   现在让材质透出来；差异正文区保留一层 58% 的代码底色作为可读性底衬，
+   避免大片代码直接压在壁纸模糊层上。 */
+.did-dialog[data-fx='glass'] > .did-dialog-head,
+.did-dialog[data-fx='liquid'] > .did-dialog-head,
+.did-dialog[data-fx='glass'] > .did-panes-head,
+.did-dialog[data-fx='liquid'] > .did-panes-head,
+.did-dialog[data-fx='glass'] > .did-dialog-foot,
+.did-dialog[data-fx='liquid'] > .did-dialog-foot {
+  background: transparent;
+}
+.did-dialog[data-fx='glass'] > .did-dialog-body,
+.did-dialog[data-fx='liquid'] > .did-dialog-body {
+  background: color-mix(in srgb, var(--did-io-bg) 58%, transparent);
+}
+/* 设置弹窗（.did-settings-dialog）内部本来就是透明的，只需保证横幅、滚动区与
+   身体不覆盖材质；.did-setting 的分隔线与小控件保持原样。 */
+.did-settings-dialog[data-fx='glass'] > .did-settings-banner,
+.did-settings-dialog[data-fx='liquid'] > .did-settings-banner,
+.did-settings-dialog[data-fx='glass'] > .did-settings-scroll,
+.did-settings-dialog[data-fx='liquid'] > .did-settings-scroll { background: transparent; }
+/* 设置页面板（.did-settings-page）原本是通栏内容；挂上材质后给它一点内边距和
+   圆角，否则文字会贴着材质边缘。只在非 native 时生效。 */
+.did-settings-page[data-fx='glass'],
+.did-settings-page[data-fx='liquid'] {
+  padding: 16px 18px 22px;
+  border-radius: var(--dsw-radius-lg, 16px);
+}
+/* 读取行范围徽标：inline-flex 的胶囊，材质直接画在它身上，尺寸/内边距保持不变
+   （原生行里必须保持原布局不跳动）；文字提高一档亮度保证半透明底上可读。 */
+.did-read-range[data-fx='glass'],
+.did-read-range[data-fx='liquid'] {
+  border-color: color-mix(in srgb, var(--did-border-2) 62%, transparent);
+  color: var(--did-fg-secondary);
+}
+
+/* ---- 外观效果 6.2. 设置面板里的「外观效果」分组控件 --------------------
+   由 settings-fx-ui 在设置面板末尾渲染；这里只做渐进增强的布局与滑杆外观，
+   没有本段样式时也能靠既有 .did-setting / .did-seg 等类正常使用。 */
+.did-fx-details { margin-top: 12px; }
+/* 与 .did-langs-details 共用 summary；这里把标题提亮成一级文字并稍加粗。 */
+.did-fx-details > summary {
+  margin-top: 4px;
+  color: var(--did-fg-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.did-fx-details[open] > summary { margin-bottom: 6px; }
+.did-fx-content { padding-top: 8px; }
+.did-fx-desc { margin-top: 6px; }
+.did-fx-legend { margin-top: 8px; }
+.did-fx-legend > div + div { margin-top: 2px; }
+.did-fx-list { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+/* 每行本身是 .did-setting（flex：左文字列 + 右分段控件）。这里**不加** flex-wrap：
+   参数行的 max-content 是「两个滑杆 + 液态模式」的整排宽度，一旦允许换行，右侧
+   效果分段会被挤到下一行左侧；交给 .did-setting-text（min-width:0）收缩、参数行
+   自己内部换行即可，窄屏由 ≤720px 的列布局处理。 */
+.did-fx-row { padding: 12px 0; }
+/* 参数行：透明度滑杆 + 模糊滑杆（+ 液态模式）自动换行，不再首尾相连。 */
+.did-fx-params {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin-top: 8px;
+}
+.did-fx-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--did-fg-tertiary);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.did-fx-range {
+  width: 130px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--dsw-alias-brand-primary);
+  cursor: pointer;
+}
+.did-fx-range:focus-visible { outline: 1px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+/* 数值用等宽数字 + 固定最小宽度，拖动时行宽不抖动。 */
+.did-fx-slider-value {
+  min-width: 38px;
+  color: var(--did-fg-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.did-fx-mode { margin-top: 2px; }
+@media (max-width: 720px) {
+  .did-fx-row { flex-direction: column; align-items: stretch; }
+  .did-fx-row .did-setting-control { align-self: flex-start; }
+  .did-fx-params { width: 100%; }
+  .did-fx-range { width: 120px; }
+}
+
+/* ---- 外观效果 7. 降级与无障碍 ---------------------------------------- */
+/* 7.1 不支持 backdrop-filter 的引擎：去掉模糊，换成高不透明度的半透明底色。
+   这里不需要“玻璃感”，只需要保证文字仍然可读。 */
+@supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+  [data-fx='glass'],
+  [data-fx='liquid'] {
+    -webkit-backdrop-filter: none;
+            backdrop-filter: none;
+    background-color: rgb(from var(--did-fx-tint-base) r g b / clamp(0.72, calc(var(--did-fx-alpha-final) + 0.4), 1));
+    background-image: var(--did-fx-glass-image);
+  }
+  [data-fx='liquid']::before,
+  [data-fx='liquid']::after { display: none; }
+}
+/* 7.2 系统“降低透明度”：完全不模糊，材质接近实体（苹果在 same 设置下也是这么做的）。 */
+@media (prefers-reduced-transparency: reduce) {
+  [data-fx='glass'],
+  [data-fx='liquid'] {
+    -webkit-backdrop-filter: none !important;
+            backdrop-filter: none !important;
+    background-color: rgb(from var(--did-fx-tint-base) r g b / clamp(0.86, calc(var(--did-fx-alpha-final) + 0.34), 1));
+  }
+  [data-fx='liquid']::before { display: none; }
+  [data-fx='liquid']::after { opacity: 0.35; }
+}
+/* 7.3 强制颜色模式：只保留 1px 边框，去掉装饰性高光与噪声。 */
+@media (forced-colors: active) {
+  [data-fx='glass'],
+  [data-fx='liquid'] {
+    background-image: none;
+    border: 1px solid CanvasText;
+    box-shadow: none;
+  }
+  [data-fx='liquid']::before,
+  [data-fx='liquid']::after { display: none; }
+  [data-fx-root='true']::after { display: none; }
+}
+
+/* ---- 外观效果 8. 弹窗遮罩的“模糊代理” ---------------------------------
+   原因（研究结论，见 .team/liquid-glass/NOTES.md probe5）：Chromium 会忽略嵌套的
+   backdrop-filter —— 祖先元素有 backdrop-filter 时，子元素/伪元素的 backdrop-filter
+   完全失效。放大弹窗（在 .did-overlay 里）与设置弹窗（在 .did-settings-overlay 里）
+   的遮罩层都自带模糊，因此这两个“表面”自身的 blur/折射是惰性的，「模糊」滑杆会
+   没有可见变化。
+
+   修复：把弹窗表面（diffModal / settingsPanel）的模糊参数接到遮罩层上——markup 在
+   表面非 native 时给遮罩挂 data-fx-backdrop 与 --did-fx-blur（surfaces.js 的
+   backdropProxyProps），遮罩按同一个 blur 与 clear/frosted 系数做 backdrop-filter，
+   弹窗内部的半透明材质叠在“已模糊的背景”上。于是模糊滑杆对这两个表面同样生效。
+   表面为 native 时遮罩不带任何属性，旧外观完全不变。 */
+.did-overlay[data-fx-backdrop],
+.did-settings-overlay[data-fx-backdrop] {
+  --did-fx-backdrop-blur: var(--did-fx-blur, 14px);
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 52%, transparent);
+  -webkit-backdrop-filter: blur(var(--did-fx-backdrop-blur)) saturate(1.1) brightness(0.92);
+          backdrop-filter: blur(var(--did-fx-backdrop-blur)) saturate(1.1) brightness(0.92);
+}
+/* clear（完全通透）：遮罩也几乎不模糊，让弹窗更像一块通透的液态玻璃。 */
+.did-overlay[data-fx-backdrop='liquid'][data-liquid-mode='clear'],
+.did-settings-overlay[data-fx-backdrop='liquid'][data-liquid-mode='clear'] {
+  --did-fx-backdrop-blur: calc(var(--did-fx-blur, 14px) * 0.12);
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 38%, transparent);
+}
+/* 无障碍降级：降低透明度时遮罩不做模糊（与内部材质的降级保持一致）。 */
+@media (prefers-reduced-transparency: reduce) {
+  .did-overlay[data-fx-backdrop],
+  .did-settings-overlay[data-fx-backdrop] {
+    -webkit-backdrop-filter: none !important;
+            backdrop-filter: none !important;
+    background: color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent);
+  }
+}
+@media (forced-colors: active) {
+  .did-overlay[data-fx-backdrop],
+  .did-settings-overlay[data-fx-backdrop] {
+    -webkit-backdrop-filter: none !important;
+            backdrop-filter: none !important;
+  }
+}
+
+
+/* ---- 外观效果 9. 浅色 / 强制浅色卡片的可读性校正 -----------------------
+   用户反馈：浅色外观下卡片边缘的小字（增删统计、行号、旧/新图例、语言徽章、
+   底部状态条、轨迹按钮……）看不清，因为 1.3.0 直接使用宿主的 success/error
+   token（官方浅色是 #22c55e / #ec1313 这类高饱和色）和三级灰，在白底/浅色玻璃
+   上只有 1.8–4.2 的对比度。
+
+   修复：语义文字统一改走 --did-*-ink 变量（默认值仍等于宿主语义色，深色外观
+   因此完全不变），浅色外观与「强制浅色外壳」的卡片用混入深色前景的“墨色”，
+   小号辅助文字提升到二级前景色；「强制深色外壳」的卡片反过来使用亮色墨。 */
+.did-add,
+.did-row[data-kind='add'] .did-sign,
+.did-row[data-kind='add'] .did-move,
+.enhanced-tool[data-variant='command'] .enhanced-kind {
+  color: var(--did-add-ink, var(--dsw-alias-state-success-primary));
+}
+.did-del,
+.did-row[data-kind='del'] .did-sign,
+.did-row[data-kind='del'] .did-move,
+.enhanced-exit,
+.enhanced-code[data-error],
+.did-error,
+.did-settings-error,
+.did-state[data-state='error'] {
+  color: var(--did-del-ink, var(--dsw-alias-state-error-primary));
+}
+.did-row[data-kind='add'] .did-num[data-side='new'] {
+  color: var(--did-num-add-ink, color-mix(in srgb, var(--dsw-alias-state-success-primary) 60%, var(--did-fg-tertiary)));
+}
+.did-row[data-kind='del'] .did-num[data-side='old'] {
+  color: var(--did-num-del-ink, color-mix(in srgb, var(--dsw-alias-state-error-primary) 60%, var(--did-fg-tertiary)));
+}
+.did-numhead-label[data-side='old'] { color: color-mix(in srgb, var(--did-del-ink, var(--dsw-alias-state-error-primary)) 72%, var(--did-fg-secondary)); }
+.did-numhead-label[data-side='new'] { color: color-mix(in srgb, var(--did-add-ink, var(--dsw-alias-state-success-primary)) 72%, var(--did-fg-secondary)); }
+
+/* 浅色外观（自动色调）：深墨色 + 小字提级。 */
+body[data-dsh-inline-diff-appearance='light'] {
+  --did-add-ink: color-mix(in srgb, var(--dsw-alias-state-success-primary) 42%, var(--did-fg-primary));
+  --did-del-ink: color-mix(in srgb, var(--dsw-alias-state-error-primary) 42%, var(--did-fg-primary));
+  --did-num-add-ink: color-mix(in srgb, var(--dsw-alias-state-success-primary) 34%, var(--did-fg-primary));
+  --did-num-del-ink: color-mix(in srgb, var(--dsw-alias-state-error-primary) 34%, var(--did-fg-primary));
+}
+/* 强制浅色外壳（无论当前外观）：同样是深墨色（--did-fg-primary 已被色调块改为深色）。 */
+[data-shell-tone='light'] {
+  --did-add-ink: color-mix(in srgb, var(--dsw-alias-state-success-primary) 42%, var(--did-fg-primary));
+  --did-del-ink: color-mix(in srgb, var(--dsw-alias-state-error-primary) 42%, var(--did-fg-primary));
+  --did-num-add-ink: color-mix(in srgb, var(--dsw-alias-state-success-primary) 34%, var(--did-fg-primary));
+  --did-num-del-ink: color-mix(in srgb, var(--dsw-alias-state-error-primary) 34%, var(--did-fg-primary));
+}
+/* 强制深色外壳：亮色墨（覆盖浅色外观的深墨色；深色外壳上需要浅色小字）。 */
+[data-shell-tone='dark'] {
+  --did-add-ink: #4ade80;
+  --did-del-ink: #f87171;
+  --did-num-add-ink: color-mix(in srgb, #4ade80 55%, var(--did-fg-tertiary));
+  --did-num-del-ink: color-mix(in srgb, #f87171 55%, var(--did-fg-tertiary));
+}
+/* 深色外观默认：错误红略微提亮，保证在深色玻璃上达到 AA。 */
+body[data-dsh-inline-diff-appearance='dark'] {
+  --did-del-ink: color-mix(in srgb, var(--dsw-alias-state-error-primary) 70%, var(--did-fg-primary));
+  --did-num-del-ink: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--did-fg-tertiary));
+}
+/* 小号辅助文字：浅色外观 / 强制浅色外壳里提升到二级前景色（白底约 6.6）。 */
+body[data-dsh-inline-diff-appearance='light'] .did-read-range,
+body[data-dsh-inline-diff-appearance='light'] .did-meta,
+body[data-dsh-inline-diff-appearance='light'] .did-empty,
+body[data-dsh-inline-diff-appearance='light'] .did-lang,
+body[data-dsh-inline-diff-appearance='light'] .did-num,
+body[data-dsh-inline-diff-appearance='light'] .did-numhead,
+body[data-dsh-inline-diff-appearance='light'] .did-bar-range,
+body[data-dsh-inline-diff-appearance='light'] .did-foot,
+body[data-dsh-inline-diff-appearance='light'] .enhanced-state,
+body[data-dsh-inline-diff-appearance='light'] .enhanced-inspect-label,
+[data-shell-tone='light'] .did-meta,
+[data-shell-tone='light'] .did-empty,
+[data-shell-tone='light'] .did-lang,
+[data-shell-tone='light'] .did-num,
+[data-shell-tone='light'] .did-numhead,
+[data-shell-tone='light'] .did-bar-range,
+[data-shell-tone='light'] .did-foot,
+[data-shell-tone='light'] .enhanced-state,
+[data-shell-tone='light'] .enhanced-inspect-label { color: var(--did-fg-secondary); }
+/* 强制深色外壳里，小号辅助文字继续用色调块的浅色二级灰（--did-fg-secondary 已随
+   色调变成 #c3cade），上面那条只用 var() 引用，不需要额外规则。 */
+
+/* 语言徽章再深一档：徽章底色本身是浅色混合，二级灰只有 4.48，改用一级前景色。 */
+body[data-dsh-inline-diff-appearance='light'] .did-lang,
+[data-shell-tone='light'] .did-lang { color: var(--did-fg-primary); }
+
+/* 浅色外观里卡片外轮廓再清晰一点：白底 + 白色高光会让玻璃卡片边缘“糊”在背景里，
+   这里把外轮廓环加深一档（只影响带 fx-root 的玻璃卡片，native 卡片不变）。 */
+body[data-dsh-inline-diff-appearance='light'] [data-fx-root='true'] {
+  --did-fx-card-ring: color-mix(in srgb, var(--did-border-2) 78%, var(--did-border-1));
+}
+
+/* ---- 外观效果 10. 强制外壳色调与外观相反时的完整适配 -------------------
+   浅色外观里选「深色外壳」（或深色外观里选「浅色外壳」）时，半透明玻璃叠在相反
+   的页面底色上会被冲成中灰：深色卡片变灰、浅色文字与语义色一起掉对比度（实测
+   1.2–2.0，完全看不清）。这种组合本身意味着用户要一张“强制色调”的卡片，因此：
+     1) 卡片内材质不再透出页面底色（--did-fx-alpha-boost 固定 1 → alpha-final=1）；
+     2) 在卡片子树内局部替换宿主品牌色与语义色：浅色主题的黑色链接 / 亮绿红不会
+        落在深色表面上，深色主题的浅色链接 / 亮绿红不会落在浅色表面上；
+     3) 卡片内的「放大」按钮跟随卡片表面色（它原本取宿主 --dsw-alias-bg-base，
+        在强制色调卡片里会出现黑胶囊 / 白胶囊与卡片底色撞色）。
+   全部只作用于“色调与外观相反”的组合；色调与外观一致的卡片不受影响。 */
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='dark'] [data-fx],
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='dark'][data-fx],
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] [data-fx],
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'][data-fx] {
+  --did-fx-alpha-boost: 1;
+}
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='dark'] {
+  --dsw-alias-brand-primary: #9db9ff;
+  --dsw-alias-brand-text: #9db9ff;
+  --dsw-alias-state-success-primary: #4ade80;
+  --dsw-alias-state-error-primary: #f87171;
+  --dsw-alias-state-warn-primary: #fbbf24;
+  --dsw-alias-label-primary: #eef1f8;
+  --dsw-alias-label-secondary: #c3cade;
+  --dsw-alias-label-tertiary: #94a1bc;
+  --dsw-alias-border-l1: rgba(151, 169, 216, 0.24);
+  --dsw-alias-border-l2: rgba(151, 169, 216, 0.42);
+}
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] {
+  --dsw-alias-brand-primary: #1d4ed8;
+  --dsw-alias-brand-text: #1d4ed8;
+  --dsw-alias-state-success-primary: #166534;
+  --dsw-alias-state-error-primary: #991b1b;
+  --dsw-alias-state-warn-primary: #b45309;
+  --dsw-alias-label-primary: #172347;
+  --dsw-alias-label-secondary: #4d5d7f;
+  --dsw-alias-label-tertiary: #6f7c99;
+  --dsw-alias-border-l1: rgba(71, 91, 145, 0.24);
+  --dsw-alias-border-l2: rgba(71, 91, 145, 0.42);
+}
+body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='dark'] .did-zoom,
+body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] .did-zoom {
+  background: var(--did-surface-1);
+  border-color: var(--did-border-2);
+  color: var(--did-fg-secondary);
+}
+/* ---- 动效 11. 卡片 / 弹窗入场与输出出现 --------------------------------
+   设计原则：
+   · 只给“从无到有”的瞬时变化加动画：运行中的工具卡片挂载、命令输出到达、
+     设置弹窗 / 放大弹窗打开；历史回放、已结算卡片、几毫秒完成的调用都不加，
+     避免为了动画而上动画。
+   · 只用 opacity + transform（GPU 合成，不触发重排）；缓动是强 ease-out 的
+     阻尼曲线，没有回弹/过冲，克制、不夸张。
+   · 「prefers-reduced-motion: reduce」 下全部关闭（用户系统偏好优先）。
+   · 动画只作用于本插件自己的 DOM，不影响 DSH 原生行与第三方主题的动画。 */
+@keyframes did-card-enter {
+  from { opacity: 0; transform: translate3d(0, 4px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes did-output-enter {
+  from { opacity: 0; transform: translate3d(0, 2px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes did-overlay-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes did-dialog-enter {
+  from { opacity: 0; transform: translate3d(0, 6px, 0) scale(0.985); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* 运行中/准备中挂载的工具卡片（仅增强风格，原生行不在此列）。 */
+  .enhanced-tool[data-enter] {
+    animation: did-card-enter 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  /* 输出占位切换到真实输出的那一次。 */
+  .enhanced-section[data-appear] {
+    animation: did-output-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  /* 设置弹窗（启动按钮打开）与放大弹窗：遮罩淡入 + 对话框轻微上浮。 */
+  .did-settings-overlay[data-enter],
+  .did-overlay-root[data-enter] {
+    animation: did-overlay-enter 140ms ease-out both;
+  }
+  .did-settings-dialog[data-enter],
+  .did-dialog[data-enter] {
+    animation: did-dialog-enter 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+/* ---- 设置页：版本与更新面板 --------------------------------------------- */
+.did-update {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 0.5px solid var(--did-border-1);
+}
+.did-update-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.did-update-headtext { flex: 1; min-width: 0; }
+.did-update-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--did-fg-primary);
+}
+.did-update-sub {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--did-fg-secondary);
+}
+.did-update-check {
+  flex: none;
+  padding: 5px 11px;
+  border: 0.5px solid var(--did-border-2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--did-fg-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.did-update-check:hover:not(:disabled) { background: color-mix(in srgb, var(--did-fg-primary) 6%, transparent); }
+.did-update-check:disabled { opacity: 0.55; cursor: default; }
+.did-update-idle {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--did-fg-tertiary);
+}
+.did-update-list {
+  margin-top: 9px;
+  max-height: 210px;
+  overflow: auto;
+  border: 0.5px solid var(--did-border-1);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--did-fg-primary) 2.5%, transparent);
+}
+.did-update-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--did-fg-primary);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.did-update-row + .did-update-row { border-top: 0.5px solid var(--did-border-1); }
+.did-update-row:hover:not(:disabled) { background: color-mix(in srgb, var(--did-fg-primary) 5%, transparent); }
+.did-update-row[data-selected] { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
+.did-update-row:disabled { opacity: 0.55; cursor: default; }
+.did-update-ver { font-family: var(--did-mono, ui-monospace, monospace); }
+.did-update-date { margin-left: auto; color: var(--did-fg-tertiary); font-size: 10.5px; }
+.did-update-badge {
+  padding: 0 5px;
+  border: 0.5px solid var(--did-border-2);
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--did-fg-secondary);
+}
+.did-update-badge[data-warn] { border-style: dashed; }
+.did-update-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+}
+.did-update-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--did-fg-tertiary);
+}
+.did-update-install {
+  flex: none;
+  padding: 5px 12px;
+  border: 0.5px solid var(--did-border-2);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
+  color: var(--did-fg-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.did-update-install:hover:not(:disabled) { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent); }
+.did-update-install:disabled { opacity: 0.5; cursor: default; }
+.did-update-manual { margin-top: 9px; }
+.did-update-manual-hint {
+  margin-bottom: 5px;
+  font-size: 10.5px;
+  color: var(--did-fg-tertiary);
+}
+.did-update-command {
+  display: block;
+  padding: 6px 8px;
+  overflow-x: auto;
+  border: 0.5px solid var(--did-border-1);
+  border-radius: 6px;
+  background: var(--did-io-bg);
+  color: var(--did-fg-secondary);
+  font-family: var(--did-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  white-space: nowrap;
+  user-select: all;
+}
+.did-update-result {
+  margin-top: 9px;
+  font-size: 11.5px;
+  color: var(--did-add-ink, var(--dsw-alias-state-success-primary));
+}
+.did-update-log { margin-top: 7px; font-size: 10.5px; color: var(--did-fg-tertiary); }
+.did-update-log pre {
+  margin: 5px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--did-io-bg);
+  color: var(--did-fg-secondary);
+  font-family: var(--did-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 `;
 
 // src/client/syntax-styles.js
@@ -23934,9 +25370,10 @@ var VARIABLE_GROUPS = ["kw", "str", "num", "type", "prop", "com", "meta", "op", 
 function paletteVars(palette) {
   return VARIABLE_GROUPS.map((group) => `  --did-syn-${group}: ${palette[group]};`).join("\n");
 }
-function paletteBlock(selector, palette) {
+function paletteBlock(selector, palette, segMix) {
   return `${selector} {
 ${paletteVars(palette)}
+  --did-syn-seg-mix: ${segMix};
 }`;
 }
 var TOKEN_RULES = `
@@ -23974,6 +25411,23 @@ var EMPHASIS_RULES = `
   font-style: inherit;
   text-decoration: inherit;
 }
+`.trim();
+var SEGMENT_RULES = `
+.did-seg[data-changed='true'] .did-tok[data-g='kw'],
+.did-seg[data-changed='true'] .did-tok[data-g='fn'],
+.did-seg[data-changed='true'] .did-tok[data-g='tag'],
+.did-seg[data-changed='true'] .did-tok[data-g='head'] { color: color-mix(in srgb, var(--did-syn-kw) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='str'],
+.did-seg[data-changed='true'] .did-tok[data-g='attr'],
+.did-seg[data-changed='true'] .did-tok[data-g='link'] { color: color-mix(in srgb, var(--did-syn-str) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='num'],
+.did-seg[data-changed='true'] .did-tok[data-g='lit'] { color: color-mix(in srgb, var(--did-syn-num) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='type'] { color: color-mix(in srgb, var(--did-syn-type) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='prop'] { color: color-mix(in srgb, var(--did-syn-prop) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='com'] { color: color-mix(in srgb, var(--did-syn-com) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='meta'] { color: color-mix(in srgb, var(--did-syn-meta) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='op'] { color: color-mix(in srgb, var(--did-syn-op) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
+.did-seg[data-changed='true'] .did-tok[data-g='punct'] { color: color-mix(in srgb, var(--did-syn-punct) var(--did-syn-seg-mix, 60%), var(--did-fg-primary)); }
 `.trim();
 var BADGE_RULES = `
 .did-lang {
@@ -24024,18 +25478,33 @@ var SYNTAX_CSS = `
    这里的规则只改 token 文字颜色。
    调色板变量声明在 body 上，原因与 styles.js 相同：宿主主题把它的 token 声明
    在 body，声明在 :root 的 var() 解析不到那些 token（详见 styles.js）。 */
-${paletteBlock("body", SYNTAX_PALETTE.dark)}
+${paletteBlock("body", SYNTAX_PALETTE.dark, "55%")}
 /* 官方浅色外观（宿主设置）：浅色内层。 */
-${paletteBlock("body[data-dsh-inline-diff-appearance='light']", SYNTAX_PALETTE.light)}
+${paletteBlock("body[data-dsh-inline-diff-appearance='light']", SYNTAX_PALETTE.light, "50%")}
 /* 单卡片内部配色覆盖。'auto' 故意不写规则：跟随上面的文档级外观。 */
-${paletteBlock("[data-inner-tone='light']", SYNTAX_PALETTE.light)}
-${paletteBlock("[data-inner-tone='dark']", SYNTAX_PALETTE.dark)}
-/* “内层配色 = 跟随外壳”：代码底色即外壳表面，因此调色板跟随外壳配色。
-   外壳配色 'auto' 同样继承文档外观，所以不需要额外规则。 */
-${paletteBlock("[data-inner-tone='same'][data-shell-tone='light']", SYNTAX_PALETTE.light)}
-${paletteBlock("[data-inner-tone='same'][data-shell-tone='dark']", SYNTAX_PALETTE.dark)}
+${paletteBlock("[data-inner-tone='light']", SYNTAX_PALETTE.light, "50%")}
+${paletteBlock("[data-inner-tone='dark']", SYNTAX_PALETTE.dark, "55%")}
+/* “内层配色 = 跟随外壳”：代码底色即外壳表面，因此调色板跟随外壳配色。 */
+${paletteBlock("[data-inner-tone='same'][data-shell-tone='light']", SYNTAX_PALETTE.light, "50%")}
+${paletteBlock("[data-inner-tone='same'][data-shell-tone='dark']", SYNTAX_PALETTE.dark, "55%")}
+/* 当“代码底色”与当前外观相反（浅色外观里的深色内层，或强制深色外壳 + 内层
+   跟随外壳）时，词级改动片段的底色更深（或更浅），token 需要更多地向可读前景色
+   靠拢才能达到 AA。比例在下面的 SEGMENT 调色板块里按上下文覆盖。 */
+body[data-dsh-inline-diff-appearance='light'] [data-inner-tone='dark'],
+body[data-dsh-inline-diff-appearance='light'] [data-inner-tone='same'][data-shell-tone='dark'] {
+  --did-syn-seg-mix: 40%;
+}
+body[data-dsh-inline-diff-appearance='dark'] [data-inner-tone='light'],
+body[data-dsh-inline-diff-appearance='dark'] [data-inner-tone='same'][data-shell-tone='light'] {
+  --did-syn-seg-mix: 35%;
+}
 
 ${TOKEN_RULES}
+
+/* 行内词级改动片段：底色比整行深，token 与前景色混合后在浅/深外观下都能达到
+   AA。混色比例 --did-syn-seg-mix 由上面的调色板块按“深/浅代码底色”给出；
+   色相仍来自同一调色板，只是整体向可读前景色靠拢，不会变成红/绿语义色。 */
+${SEGMENT_RULES}
 
 ${EMPHASIS_RULES}
 
@@ -24095,6 +25564,15 @@ function readRangeLabels(ranges, t) {
 // src/client/read-range-dom.js
 var CHIP_ATTR = "data-dsh-inline-diff-read-range";
 var rowCache = /* @__PURE__ */ new WeakMap();
+function applyChipAppearance(chip) {
+  const config = surfaceDomValues(getSettings(), "readRangeChip");
+  chip.setAttribute("data-fx", config.effect);
+  chip.setAttribute("data-fx-surface", "readRangeChip");
+  if (config.effect === EFFECT_LIQUID) chip.setAttribute("data-liquid-mode", config.mode);
+  else chip.removeAttribute("data-liquid-mode");
+  chip.style.setProperty("--did-fx-alpha", String(config.opacity));
+  chip.style.setProperty("--did-fx-blur", `${config.blur}px`);
+}
 function blockFromFiber(element) {
   const key = Object.keys(element).find((name) => name.startsWith("__reactFiber$") || name.startsWith("__reactInternalInstance$"));
   if (key === void 0) return null;
@@ -24140,6 +25618,7 @@ function syncReadRow(row, t) {
   }
   if (chip.textContent !== label) chip.textContent = label;
   if (chip.title !== label) chip.title = label;
+  applyChipAppearance(chip);
   const expanded = explicitHeader.getAttribute("aria-expanded") === "true";
   if (chip.hidden !== expanded) chip.hidden = expanded;
 }
@@ -24198,10 +25677,21 @@ function startReadRangeChips(t) {
     return () => {
     };
   }
+  let unsubscribeSettings = () => {
+  };
+  try {
+    unsubscribeSettings = subscribeSettings(() => {
+      for (const chip of document.querySelectorAll(`[${CHIP_ATTR}]`)) applyChipAppearance(chip);
+    });
+  } catch {
+    unsubscribeSettings = () => {
+    };
+  }
   let stopped = false;
   return () => {
     if (stopped) return;
     stopped = true;
+    unsubscribeSettings();
     observer.disconnect();
     if (frame !== null) {
       if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
@@ -24212,14 +25702,93 @@ function startReadRangeChips(t) {
 }
 
 // src/client/project.js
-var VERSION = "1.3.0";
+var VERSION = "1.4.0";
 var AUTHOR = "Him666233";
 var AUTHOR_URL = "https://github.com/Him666233";
 var REPO_URL = "https://github.com/Him666233/dsh-inline-diff";
 
 // src/client/settings-ui.jsx
-var import_react5 = require("react");
+var import_react6 = require("react");
 var import_react_dom2 = require("react-dom");
+
+// src/client/updates.js
+function parseSemver(text) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(text ?? "").trim());
+  if (match === null) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    pre: match[4] === void 0 ? [] : match[4].split(".")
+  };
+}
+function compareSemver(left, right) {
+  const a = parseSemver(left);
+  const b = parseSemver(right);
+  if (a === null || b === null) return 0;
+  for (const key of ["major", "minor", "patch"]) {
+    if (a[key] !== b[key]) return a[key] - b[key];
+  }
+  if (a.pre.length === 0 && b.pre.length === 0) return 0;
+  if (a.pre.length === 0) return 1;
+  if (b.pre.length === 0) return -1;
+  const length = Math.max(a.pre.length, b.pre.length);
+  for (let index = 0; index < length; index += 1) {
+    const x = a.pre[index];
+    const y = b.pre[index];
+    if (x === void 0) return -1;
+    if (y === void 0) return 1;
+    const xn = /^\d+$/.test(x) ? Number(x) : null;
+    const yn = /^\d+$/.test(y) ? Number(y) : null;
+    if (xn !== null && yn !== null) {
+      if (xn !== yn) return xn - yn;
+      continue;
+    }
+    if (xn !== null) return -1;
+    if (yn !== null) return 1;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+function buildVersionRows(payload2, currentVersion) {
+  const rows = [];
+  const versions = Array.isArray(payload2?.versions) ? payload2.versions : [];
+  const latest = typeof payload2?.latest === "string" ? payload2.latest : null;
+  for (const item of versions) {
+    if (item === null || typeof item !== "object") continue;
+    if (typeof item.version !== "string" || parseSemver(item.version) === null) continue;
+    const installable = item.installable !== false;
+    const reason = installable ? null : item.bundleMissing === true ? "bundle-missing" : "unavailable";
+    rows.push({
+      version: item.version,
+      latest: item.version === latest || item.latest === true,
+      current: currentVersion !== null && currentVersion !== void 0 && item.version === currentVersion,
+      publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : null,
+      deprecated: typeof item.deprecated === "string" || item.deprecated === true,
+      enginesDsh: typeof item.enginesDsh === "string" ? item.enginesDsh : null,
+      installable,
+      reason
+    });
+  }
+  rows.sort((a, b) => compareSemver(b.version, a.version));
+  return rows;
+}
+function installActionFor(currentVersion, targetVersion) {
+  if (parseSemver(currentVersion) === null || parseSemver(targetVersion) === null) return null;
+  const order = compareSemver(targetVersion, currentVersion);
+  if (order === 0) return "reinstall";
+  return order > 0 ? "update" : "rollback";
+}
+function formatPublishedAt(iso) {
+  if (typeof iso !== "string" || iso === "") return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+// src/client/settings-ui.jsx
 var import_jsx_runtime4 = require("react/jsx-runtime");
 var ORIGINALITY_REPO_URL = "https://github.com/JanEickholt/dsh-inline-diff";
 var modalOpen = false;
@@ -24239,7 +25808,7 @@ function subscribeModal(listener) {
   return () => modalListeners.delete(listener);
 }
 function useModalOpen() {
-  return (0, import_react5.useSyncExternalStore)(subscribeModal, () => modalOpen, () => modalOpen);
+  return (0, import_react6.useSyncExternalStore)(subscribeModal, () => modalOpen, () => modalOpen);
 }
 var languagesCache;
 function supportedLanguageList() {
@@ -24306,8 +25875,8 @@ function SlidersIcon({ size = 15 }) {
     /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("circle", { cx: "10.75", cy: "12", r: "1.6", stroke: "currentColor", strokeWidth: "1.4" })
   ] });
 }
-function SettingRow({ label, description, children, extra }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-setting", children: [
+function SettingRow({ label, description, children, extra, className }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: className === void 0 ? "did-setting" : `did-setting ${className}`, children: [
     /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-setting-text", children: [
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-setting-label", children: label }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-setting-desc", children: description }),
@@ -24316,13 +25885,126 @@ function SettingRow({ label, description, children, extra }) {
     /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-setting-control", children })
   ] });
 }
+var FX_EFFECT_LABEL_KEYS = {
+  native: "fx.effectNative",
+  glass: "fx.effectGlass",
+  liquid: "fx.effectLiquid"
+};
+var FX_EFFECT_DESC_KEYS = {
+  native: "fx.effectNativeDesc",
+  glass: "fx.effectGlassDesc",
+  liquid: "fx.effectLiquidDesc"
+};
+var FX_MODE_LABEL_KEYS = { clear: "fx.liquidClear", frosted: "fx.liquidFrosted" };
+function FxRange({ label, display, value, min, max, step, onChange }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { className: "did-fx-slider", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-fx-slider-label", children: label }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+      "input",
+      {
+        className: "did-fx-range",
+        type: "range",
+        "aria-label": label,
+        min,
+        max,
+        step,
+        value,
+        onChange: (event) => onChange(Number(event.target.value))
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-fx-slider-value", children: display })
+  ] });
+}
+function FxSettings({ t, settings, onChange }) {
+  let enabledCount = 0;
+  for (const surface of SURFACES) {
+    if (effectOf(settings, surface.id).effect !== "native") enabledCount += 1;
+  }
+  const summaryState = enabledCount === 0 ? t("fx.summaryNone") : t("fx.summaryCount", { n: enabledCount });
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("details", { className: "did-fx-details did-langs-details", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("summary", { children: [
+      t("fx.sectionTitle"),
+      summaryState
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-fx-content", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-setting-desc did-fx-desc", children: t("fx.sectionDesc") }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-note did-fx-legend", children: EFFECTS.map((effect) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+        t(FX_EFFECT_LABEL_KEYS[effect]),
+        " — ",
+        t(FX_EFFECT_DESC_KEYS[effect])
+      ] }, effect)) }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-fx-list", children: SURFACES.map((surface) => {
+        const config = effectOf(settings, surface.id);
+        const liquid = config.effect === "liquid";
+        const params = config.effect === "native" ? void 0 : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-fx-params", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+            FxRange,
+            {
+              label: t("fx.opacity"),
+              display: `${Math.round(config.opacity * 100)}%`,
+              value: config.opacity,
+              min: FX_LIMITS.opacityMin,
+              max: FX_LIMITS.opacityMax,
+              step: FX_LIMITS.opacityStep,
+              onChange: (value) => onChange(surface.id, { opacity: value })
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+            FxRange,
+            {
+              label: t("fx.blur"),
+              display: `${config.blur}px`,
+              value: config.blur,
+              min: FX_LIMITS.blurMin,
+              max: FX_LIMITS.blurMax,
+              step: FX_LIMITS.blurStep,
+              onChange: (value) => onChange(surface.id, { blur: value })
+            }
+          ),
+          liquid ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-tones did-fx-mode", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-tone-label", children: t("fx.liquidMode") }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+              Segmented,
+              {
+                ariaLabel: t("fx.liquidMode"),
+                value: config.mode,
+                onChange: (value) => onChange(surface.id, { mode: value }),
+                options: LIQUID_MODES.map((mode) => ({ value: mode, label: t(FX_MODE_LABEL_KEYS[mode]) }))
+              }
+            )
+          ] }) : null
+        ] });
+        return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+          SettingRow,
+          {
+            className: "did-fx-row",
+            label: t(surface.labelKey),
+            description: t(surface.descKey),
+            extra: params,
+            children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+              Segmented,
+              {
+                ariaLabel: `${t(surface.labelKey)} · ${t("fx.effect")}`,
+                value: config.effect,
+                onChange: (value) => onChange(surface.id, { effect: value }),
+                options: EFFECTS.map((effect) => ({ value: effect, label: t(FX_EFFECT_LABEL_KEYS[effect]) }))
+              }
+            )
+          },
+          surface.id
+        );
+      }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-note", children: t("fx.note") })
+    ] })
+  ] });
+}
 function SettingsCloseButton({ onClose, t }) {
   return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", className: "did-settings-close", onClick: onClose, "aria-label": t("close"), title: t("close"), children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("svg", { viewBox: "0 0 16 16", width: "13", height: "13", fill: "none", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("path", { d: "m3.5 3.5 9 9m0-9-9 9", stroke: "currentColor", strokeWidth: "1.6", strokeLinecap: "round" }) }) });
 }
 function SupportedLanguages({ t, languages }) {
-  const [open, setOpen] = (0, import_react5.useState)(false);
-  const detailsRef = (0, import_react5.useRef)(null);
-  (0, import_react5.useEffect)(() => {
+  const [open, setOpen] = (0, import_react6.useState)(false);
+  const detailsRef = (0, import_react6.useRef)(null);
+  (0, import_react6.useEffect)(() => {
     const node = detailsRef.current;
     if (node === null) return void 0;
     const onToggle = () => setOpen(node.open);
@@ -24343,10 +26025,10 @@ function SupportedLanguages({ t, languages }) {
 function SettingsPanel({ t, onClose }) {
   const settings = useSettingsSnapshot();
   const languageList = supportedLanguageList();
-  const [dsmMode, setDsmMode] = (0, import_react5.useState)(void 0);
-  const [busy, setBusy] = (0, import_react5.useState)(false);
-  const [error, setError] = (0, import_react5.useState)("");
-  (0, import_react5.useEffect)(() => {
+  const [dsmMode, setDsmMode] = (0, import_react6.useState)(void 0);
+  const [busy, setBusy] = (0, import_react6.useState)(false);
+  const [error, setError] = (0, import_react6.useState)("");
+  (0, import_react6.useEffect)(() => {
     setDsmMode(currentTranscriptMode());
   }, [settings.transcript]);
   const chooseTranscript = async (mode) => {
@@ -24376,6 +26058,12 @@ function SettingsPanel({ t, onClose }) {
     }
   };
   const transcriptNote = settings.transcript === "enhanced" ? t("settings.transcriptEnhancedNote") : t("settings.transcriptNativeNote");
+  const patchSurfaceEffect = (surfaceId, patch) => {
+    const current = getSettings();
+    const effects = { ...current.effects ?? {} };
+    effects[surfaceId] = { ...effectOf(current, surfaceId), ...patch };
+    updateSettings({ effects });
+  };
   return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings", children: [
     /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-headtext", children: [
@@ -24555,6 +26243,8 @@ function SettingsPanel({ t, onClose }) {
       settings.toolCalls === "enhanced" && settings.transcript === "native" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-note", children: t("settings.toolCallsNeedsFlat") }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-note", children: t("settings.subagentNote") }),
       dsmMode !== void 0 && settings.transcript === "enhanced" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-note", children: t("settings.dsmCurrent", { mode: dsmMode }) }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(FxSettings, { t, settings, onChange: patchSurfaceEffect }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(UpdateSection, { t }),
       error !== "" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-error", children: error }) : null
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-foot", children: [
@@ -24572,7 +26262,8 @@ function SettingsPanel({ t, onClose }) {
   ] });
 }
 function SettingsSection({ t }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-page", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingsPanel, { t }) });
+  const settings = useSettingsSnapshot();
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-page", ...surfaceProps(settings, "settingsPanel"), children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingsPanel, { t }) });
 }
 function SettingsLauncher({ wide, t }) {
   return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
@@ -24590,13 +26281,139 @@ function SettingsLauncher({ wide, t }) {
     }
   );
 }
+function UpdateSection({ t }) {
+  const [info, setInfo] = (0, import_react6.useState)(null);
+  const [loading, setLoading] = (0, import_react6.useState)(false);
+  const [installing, setInstalling] = (0, import_react6.useState)(false);
+  const [error, setError] = (0, import_react6.useState)("");
+  const [selected, setSelected] = (0, import_react6.useState)(null);
+  const [result, setResult] = (0, import_react6.useState)(null);
+  const currentVersion = info?.current ?? VERSION;
+  const rows = (0, import_react6.useMemo)(() => info === null ? [] : buildVersionRows(info, currentVersion), [info, currentVersion]);
+  const selectedRow = rows.find((row) => row.version === selected) ?? null;
+  const action = selectedRow === null ? null : installActionFor(currentVersion, selectedRow.version);
+  const manualMode = info?.installer?.mode === "manual";
+  const resetFeedback = () => {
+    setError("");
+    setResult(null);
+  };
+  const load2 = async (refresh) => {
+    if (loading === true || installing === true) return;
+    resetFeedback();
+    setLoading(true);
+    const data = await fetchUpdateInfo(refresh);
+    setLoading(false);
+    if (data === null) {
+      setError(t("update.errorNetwork"));
+      return;
+    }
+    setInfo(data);
+    const preferred = data.versions?.find((item) => item.version === data.latest && item.installable !== false) ?? data.versions?.find((item) => item.installable !== false);
+    setSelected(preferred?.version ?? null);
+  };
+  const install = async () => {
+    if (selectedRow === null || selectedRow.installable !== true || installing === true) return;
+    resetFeedback();
+    setInstalling(true);
+    const response = await performUpdate(selectedRow.version);
+    setInstalling(false);
+    if (response === null) {
+      setError(t("update.errorNetwork"));
+      return;
+    }
+    setResult(response);
+    if (response.ok === true) setInfo((prev) => prev === null ? prev : { ...prev, current: response.installedVersion ?? prev.current });
+  };
+  const actionLabel = action === "update" ? t("update.updateTo", { version: selectedRow?.version ?? "" }) : action === "rollback" ? t("update.rollbackTo", { version: selectedRow?.version ?? "" }) : action === "reinstall" ? t("update.reinstall", { version: selectedRow?.version ?? "" }) : t("update.selectVersion");
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-update", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-update-head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-update-headtext", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-update-title", children: t("update.title") }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-update-sub", children: [
+          t("update.current", { version: currentVersion }),
+          typeof info?.latest === "string" ? ` · ${t("update.latest")} v${info.latest}` : "",
+          typeof info?.dshVersion === "string" ? ` · DSH ${info.dshVersion}` : ""
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "did-update-check",
+          disabled: loading || installing,
+          onClick: () => load2(true),
+          children: loading ? t("update.checking") : t("update.check")
+        }
+      )
+    ] }),
+    error !== "" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-error", children: error }) : null,
+    info === null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-update-idle", children: t("update.idleHint") }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(import_react6.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-update-list", role: "listbox", "aria-label": t("update.versions"), children: rows.slice(0, 15).map((row) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+        "button",
+        {
+          type: "button",
+          role: "option",
+          "aria-selected": selected === row.version,
+          className: "did-update-row",
+          "data-selected": selected === row.version ? "" : void 0,
+          "data-latest": row.latest ? "" : void 0,
+          "data-current": row.current ? "" : void 0,
+          "data-unavailable": row.installable ? void 0 : "",
+          disabled: !row.installable,
+          onClick: () => {
+            resetFeedback();
+            setSelected(row.version);
+          },
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: "did-update-ver", children: [
+              "v",
+              row.version
+            ] }),
+            row.latest ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-update-badge", children: t("update.latest") }) : null,
+            row.current ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-update-badge", children: t("update.installed") }) : null,
+            row.deprecated ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-update-badge", "data-warn": "", children: t("update.deprecated") }) : null,
+            row.installable ? null : /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-update-badge", "data-warn": "", children: t("update.unavailable") }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-update-date", children: formatPublishedAt(row.publishedAt) })
+          ]
+        },
+        row.version
+      )) }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-update-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-update-hint", children: manualMode ? t("update.manualHint") : t("update.restartHint") }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "did-update-install",
+            disabled: selectedRow === null || selectedRow.installable !== true || installing || manualMode,
+            onClick: install,
+            children: installing ? t("update.installing") : actionLabel
+          }
+        )
+      ] }),
+      manualMode && typeof info?.installer?.command === "string" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-update-manual", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-update-manual-hint", children: t("update.manualCommandHint", { profile: info?.profile?.name ?? "desktop" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("code", { className: "did-update-command", children: info.installer.command.replace("@<version>", `@${selectedRow?.version ?? "<version>"}`) })
+      ] }) : null,
+      result !== null ? result.ok ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-update-result", "data-ok": "", children: t("update.installOk", { version: result.installedVersion ?? selectedRow?.version ?? "" }) }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-error", children: [
+        t("update.installFailed", { code: result.code ?? "unknown" }),
+        typeof result.command === "string" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-update-manual-hint", children: result.command }) : null
+      ] }) : null,
+      typeof result?.logTail === "string" && result.logTail !== "" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("details", { className: "did-update-log", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("summary", { children: t("update.log") }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("pre", { children: result.logTail })
+      ] }) : null
+    ] })
+  ] });
+}
 function SettingsModal({ t }) {
   const open = useModalOpen();
-  const [host, setHost] = (0, import_react5.useState)(null);
-  (0, import_react5.useEffect)(() => {
+  const settings = useSettingsSnapshot();
+  const [host, setHost] = (0, import_react6.useState)(null);
+  (0, import_react6.useEffect)(() => {
     setHost(document.body);
   }, []);
-  (0, import_react5.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     if (!open) return;
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
@@ -24608,21 +26425,33 @@ function SettingsModal({ t }) {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
   if (!open) return null;
-  const overlay = /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_react5.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-overlay", onPointerDown: closeSettingsModal, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("settings.title"), onPointerDown: (event) => event.stopPropagation(), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-banner", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-headtext", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-title", children: t("settings.title") }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-sub", children: t("settings.description") })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingsCloseButton, { onClose: closeSettingsModal, t })
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-scroll", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingsPanel, { t, onClose: closeSettingsModal }) })
-  ] }) }) });
+  const overlay = /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_react6.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-overlay", "data-enter": "", ...backdropProxyProps(settings, "settingsPanel"), onPointerDown: closeSettingsModal, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+    "div",
+    {
+      className: "did-settings-dialog",
+      "data-enter": "",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": t("settings.title"),
+      ...surfaceProps(settings, "settingsPanel"),
+      onPointerDown: (event) => event.stopPropagation(),
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-banner", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-headtext", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-title", children: t("settings.title") }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-sub", children: t("settings.description") })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingsCloseButton, { onClose: closeSettingsModal, t })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-scroll", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SettingsPanel, { t, onClose: closeSettingsModal }) })
+      ]
+    }
+  ) }) });
   return host === null ? overlay : (0, import_react_dom2.createPortal)(overlay, host);
 }
 
 // src/client/index.jsx
-installI18nRuntime({ createElement: import_react6.createElement, useSyncExternalStore: import_react6.useSyncExternalStore });
+installI18nRuntime({ createElement: import_react7.createElement, useSyncExternalStore: import_react7.useSyncExternalStore });
 var PluginInlineDiffCard = withPluginI18n(InlineDiffCard);
 var PluginEnhancedShellCard = withPluginI18n(EnhancedShellCard);
 var PluginEnhancedExpandedTool = withPluginI18n(EnhancedExpandedTool);
@@ -24651,6 +26480,7 @@ function apply(ctx) {
     document.head.appendChild(style);
     return () => style.remove();
   }, "dsh-inline-diff: syntax stylesheet");
+  ctx.effect(() => installGlassRefraction(), "dsh-inline-diff: glass refraction filters");
   console.info(`[dsh-inline-diff] client ${VERSION} · enhanced presentation`);
   ctx.effect(() => startReadRangeChips(pluginTranslate), "dsh-inline-diff: read range chips");
   initSettings(ctx.configForms);

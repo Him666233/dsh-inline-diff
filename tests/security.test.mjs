@@ -300,6 +300,49 @@ test('non-POST methods and unknown actions are refused', async () => {
   assert.equal(json(unknown).error, 'unknown action')
 })
 
+test('update endpoints are protected by the same trust boundary before any work', async () => {
+  const harness = createHarness()
+  const foreignHost = await call(harness, {
+    method: 'GET',
+    url: `${API}/update/versions`,
+    headers: { host: 'evil.example' },
+  })
+  assert.equal(foreignHost.status, 403)
+  const crossSite = await call(harness, {
+    method: 'GET',
+    url: `${API}/update/versions`,
+    headers: { 'sec-fetch-site': 'cross-site' },
+  })
+  assert.equal(crossSite.status, 403)
+})
+
+test('update install rejects malformed versions before touching the registry', async () => {
+  const harness = createHarness()
+  for (const version of ['not-a-version', '1.2', '1.2.3.4', 'x'.repeat(200), 42, null, ['1.2.3']]) {
+    const response = await call(harness, postBody(`${API}/update/install`, { version }))
+    assert.equal(response.status, 400)
+    assert.equal(json(response).code, 'invalid-version', `version=${JSON.stringify(version)}`)
+  }
+})
+
+test('update install requires a known profile context before spawning anything', async () => {
+  const harness = createHarness()
+  const response = await call(harness, postBody(`${API}/update/install`, { version: '1.4.0' }))
+  assert.equal(response.status, 400)
+  assert.equal(json(response).code, 'profile-unknown')
+})
+
+test('update install only accepts application/json', async () => {
+  const harness = createHarness()
+  const response = await call(harness, {
+    method: 'POST',
+    url: `${API}/update/install`,
+    headers: { 'content-type': 'text/plain' },
+    body: JSON.stringify({ version: '1.4.0' }),
+  })
+  assert.equal(response.status, 415)
+})
+
 test('POST requires an application/json content type (blocks cross-site simple requests)', async () => {
   const harness = createHarness()
   const textPlain = await call(harness, {

@@ -6,9 +6,9 @@
  * `language` 设置（'zh' / 'en' / 'auto'），因此插件 UI 文案必须在“插件语言”
  * 下渲染，而不是永远跟随 DSH 的全局语言：
  *
- *   language='zh'   → 插件界面固定中文（默认值）；
- *   language='en'   → 插件界面固定英文；
- *   language='auto' → 跟随 DSH：DSH 为中文时中文，其他语言时英文。
+ *   language='auto' → **默认值**：跟随 DSH：DSH 为中文时中文，其他语言时英文；
+ *   language='zh'   → 插件界面固定中文；
+ *   language='en'   → 插件界面固定英文。
  *
  * 本模块只依赖纯数据（./locales.js）与设置存储（./settings.js），**不静态
  * import react**：`tests/locales.test.mjs` 在纯 Node（未安装 react）下运行，
@@ -34,7 +34,7 @@
  *     （可在下次重渲染时恢复）；
  *   - 包装组件在没有 React 运行时的环境（Node 单测）直接渲染原组件，不抛错。
  */
-import { DEFAULT_LANGUAGE, dicts } from './locales.js'
+import { DEFAULT_LANGUAGE, DEFAULT_LANGUAGE_SETTING, dicts } from './locales.js'
 import { getSettings, subscribeSettings } from './settings.js'
 
 /*
@@ -43,7 +43,7 @@ import { getSettings, subscribeSettings } from './settings.js'
  * 这里 re-export 保持 1.3.0 已公开的导出签名（tests/locales.test.mjs 从本模块
  * 导入这三个常量）。
  */
-export { DEFAULT_LANGUAGE, LANGUAGE_SETTINGS, SUPPORTED_LANGUAGES } from './locales.js'
+export { DEFAULT_LANGUAGE, DEFAULT_LANGUAGE_SETTING, LANGUAGE_SETTINGS, SUPPORTED_LANGUAGES } from './locales.js'
 
 /* ========================================================================
  * 1. 纯函数：设置值归一化、宿主语言归类、语言解析
@@ -54,10 +54,10 @@ export { DEFAULT_LANGUAGE, LANGUAGE_SETTINGS, SUPPORTED_LANGUAGES } from './loca
  *
  * @param {unknown} value - localStorage 里可能残留的任意值（旧版本无该字段、
  *   手工编辑的 JSON、未来版本的新值等）。
- * @returns {'zh'|'en'|'auto'} 合法值原样返回；其余一律返回默认值 'zh'。
+ * @returns {'zh'|'en'|'auto'} 合法值原样返回；其余一律返回默认设置 'auto'。
  */
 export function normalizeLanguageSetting(value) {
-  return value === 'zh' || value === 'en' || value === 'auto' ? value : DEFAULT_LANGUAGE
+  return value === 'zh' || value === 'en' || value === 'auto' ? value : DEFAULT_LANGUAGE_SETTING
 }
 
 /**
@@ -88,9 +88,9 @@ export function hostLanguageKind(hostLanguage) {
  *   - 'zh'   → 'zh'（固定中文）；
  *   - 'en'   → 'en'（固定英文）；
  *   - 'auto' → 跟随 DSH：宿主语言归类为 'zh' 时中文，其余已知语言英文；
- *              宿主语言未知（locale 服务尚未接线 / 单测环境）时回退默认中文，
- *              因为“默认语言必须是中文”是产品硬约束；
- *   - 其它（旧存档无该字段时这里收到 undefined、手改 JSON 的非法值）→ 'zh'。
+ *              宿主语言未知（locale 服务尚未接线 / 单测环境）时回退字典兜底语言；
+ *   - 其它（旧存档无该字段时这里收到 undefined、手改 JSON 的非法值）→ 视为
+ *     'auto'：默认跟随 DSH（这是当前的产品默认值）。
  *
  * @param {unknown} setting - 插件的 language 设置值。
  * @param {unknown} hostLanguage - DSH 当前语言 id（可缺省）。
@@ -99,7 +99,7 @@ export function hostLanguageKind(hostLanguage) {
 export function resolveLanguage(setting, hostLanguage) {
   if (setting === 'zh') return 'zh'
   if (setting === 'en') return 'en'
-  if (setting !== 'auto') return DEFAULT_LANGUAGE
+  // 'auto' 以及非法/缺失值都按“跟随 DSH”处理：默认值是 auto。
   const host = hostLanguageKind(hostLanguage)
   if (host === 'zh') return 'zh'
   if (host === 'en') return 'en'
