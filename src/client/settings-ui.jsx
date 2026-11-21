@@ -22,7 +22,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { supportedLanguages } from './languages.js'
-import { fetchUpdateInfo, performUpdate } from './api.js'
+import { fetchReadRoots, fetchUpdateInfo, performUpdate, saveReadRoots } from './api.js'
 import { buildVersionRows, formatPublishedAt, installActionFor } from './updates.js'
 import { AUTHOR, AUTHOR_URL, REPO_URL, VERSION } from './project.js'
 import {
@@ -604,6 +604,8 @@ function SettingsPanel({ t, onClose }) {
             默认折叠，标题显示已启用的表面数量，面板因此只多一行。 */}
         <FxSettings t={t} settings={settings} onChange={patchSurfaceEffect} />
 
+        <ReadRootsSection t={t} />
+
         <UpdateSection t={t} />
 
         {error !== '' ? <div className="did-settings-error">{error}</div> : null}
@@ -647,6 +649,121 @@ export function SettingsLauncher({ wide, t }) {
       <SlidersIcon />
       {wide ? <span className="did-launcher-label">{t('settings.short')}</span> : null}
     </button>
+  )
+}
+
+/**
+ * 额外可读目录（工作区外）：用户显式授权后，历史回放/str_replace_editor 才能
+ * 读取工作区外文件的“当前文件”补齐行号。清单持久化在 Host（~/.dsh），不是
+ * localStorage；设置面板只负责增删并展示 Host 返回的规范路径。
+ *
+ * 失败与回退：GET/POST 失败显示稳定 code（不回显路径/errno）；加载失败时输入
+ * 仍可尝试（Host 会再校验），但不会假装保存成功。
+ */
+function ReadRootsSection({ t }) {
+  const [roots, setRoots] = useState([])
+  const [max, setMax] = useState(12)
+  const [loaded, setLoaded] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    fetchReadRoots().then(result => {
+      if (!alive) return
+      if (result !== null) {
+        setRoots(result.roots)
+        setMax(result.max)
+      }
+      setLoaded(true)
+    })
+    return () => { alive = false }
+  }, [])
+
+  const save = async next => {
+    if (busy) return
+    setBusy(true)
+    setFeedback(null)
+    const result = await saveReadRoots(next)
+    setBusy(false)
+    if (result === null) {
+      setFeedback({ kind: 'error', code: 'network' })
+      return
+    }
+    if (result.ok !== true) {
+      setFeedback({ kind: 'error', code: result.code })
+      return
+    }
+    setRoots(result.roots)
+    setFeedback({ kind: 'ok' })
+  }
+
+  const add = () => {
+    const value = draft.trim()
+    if (value === '' || busy) return
+    setDraft('')
+    void save([...roots, value])
+  }
+
+  return (
+    <div className="did-readroots">
+      <div className="did-setting-label">{t('settings.readRoots')}</div>
+      <div className="did-setting-desc">{t('settings.readRootsDesc')}</div>
+      <div className="did-readroots-row">
+        <input
+          className="did-readroots-input"
+          type="text"
+          value={draft}
+          placeholder={t('settings.readRootsPlaceholder')}
+          aria-label={t('settings.readRootsPlaceholder')}
+          disabled={busy || !loaded}
+          spellCheck={false}
+          onChange={event => setDraft(event.target.value)}
+          onKeyDown={event => {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            add()
+          }}
+        />
+        <button
+          type="button"
+          className="did-readroots-button"
+          disabled={busy || !loaded || draft.trim() === ''}
+          onClick={add}
+        >
+          {busy ? t('settings.readRootsBusy') : t('settings.readRootsAdd')}
+        </button>
+      </div>
+      <div className="did-readroots-list">
+        {roots.length === 0 ? (
+          <div className="did-readroots-empty">{t('settings.readRootsEmpty')}</div>
+        ) : roots.map(root => (
+          <div className="did-readroots-item" key={root}>
+            <span className="did-readroots-path" title={root}>{root}</span>
+            <button
+              type="button"
+              className="did-readroots-button"
+              disabled={busy}
+              onClick={() => { void save(roots.filter(item => item !== root)) }}
+            >
+              {t('settings.readRootsRemove')}
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="did-settings-note">
+        {t('settings.readRootsLimit', { max })}
+        {' · '}
+        {t('settings.readRootsNote')}
+      </div>
+      {feedback?.kind === 'ok' ? (
+        <div className="did-readroots-ok">{t('settings.readRootsSaved')}</div>
+      ) : null}
+      {feedback?.kind === 'error' ? (
+        <div className="did-settings-error">{t('settings.readRootsError', { code: feedback.code ?? 'unknown' })}</div>
+      ) : null}
+    </div>
   )
 }
 

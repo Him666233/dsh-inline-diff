@@ -4,7 +4,7 @@
 
 > **原创声明（重要）**：本项目是**完全原创**的作品，与 [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff) **以及任何其他同名插件、仓库或项目没有任何关系**。本项目没有参考、复制或移植上述项目；两者的实现方式、模块划分、代码组织与最终渲染效果完全不同。部分功能相似（对话内联差异展示）纯属**雷同巧合**——本项目是在完成实现之后搜索同类插件时，才发现存在同名/相似项目。本项目**不是**任何其他项目的衍生作品、复刻作品或分支，请勿混用或混淆。英文声明见 [README.en.md](README.en.md)。
 
-在 [DeepSeek Harness](https://github.com/deepseek-ai) 的对话流里，为每一次文件修改就地渲染可展开的差异卡片，并提供左右对照、行内字符级高亮、移动块/被动行号说明和读取行范围展示；1.1.0 起还会自动识别被修改文件的语言，在内联卡片与放大弹窗中显示语言徽章并按语言做语法高亮（配色刻意避开红绿，避免与新增/删除标记混淆）；1.2.0 起命令与工具卡片用 IN/OUT 两段独立色条分别表达输入与输出状态；1.2.5 起行号列带「旧 / 新」图例，放大弹窗的说明横幅与设置弹窗标题栏保持固定；1.2.6 起外壳与弹窗颜色严格跟随当前主题（官方原版主题与第三方皮肤均可正确切换）；**1.3.0 起提供完整的中英双语界面与文档，并可在设置页独立切换语言；1.4.0 起默认「跟随 DSH」，并新增卡片/弹窗动效与设置页自带的版本检查、更新和回退**。命令、搜索、网页与通用工具调用还可切换为默认展开 IN/OUT 的「展开风格」。
+在 [DeepSeek Harness](https://github.com/deepseek-ai) 的对话流里，为每一次文件修改就地渲染可展开的差异卡片，并提供左右对照、行内字符级高亮、移动块/被动行号说明和读取行范围展示；1.1.0 起还会自动识别被修改文件的语言，在内联卡片与放大弹窗中显示语言徽章并按语言做语法高亮（配色刻意避开红绿，避免与新增/删除标记混淆）；1.2.0 起命令与工具卡片用 IN/OUT 两段独立色条分别表达输入与输出状态；1.2.5 起行号列带「旧 / 新」图例，放大弹窗的说明横幅与设置弹窗标题栏保持固定；1.2.6 起外壳与弹窗颜色严格跟随当前主题（官方原版主题与第三方皮肤均可正确切换）；**1.3.0 起提供完整的中英双语界面与文档，并可在设置页独立切换语言；1.4.0 起默认「跟随 DSH」，并新增卡片/弹窗动效与设置页自带的版本检查、更新和回退；1.4.1 起 Host 会提供当前注册的工具清单，第三方插件新增的工具（如 dsh-ssh 的 `ssh_*`、MCP 桥接工具）也自动纳入「展开风格」，无需逐个适配**。命令、搜索、网页与通用工具调用还可切换为默认展开 IN/OUT 的「展开风格」。
 
 **作者**：[Him666233](https://github.com/Him666233) · **仓库**：[Him666233/dsh-inline-diff](https://github.com/Him666233/dsh-inline-diff) · **npm**：[`@him666233/dsh-inline-diff`](https://www.npmjs.com/package/@him666233/dsh-inline-diff) · **License**：[MIT](LICENSE)
 
@@ -91,6 +91,8 @@ Read 工具行保留 DSH 原生卡片与展开行为；折叠时在文件名右�
 - **设置页自带更新与回退（1.4.0 新增）**：设置面板底部「版本与更新」可检查 npm 上的全部版本（按版本降序，标记最新 / 当前 / 已废弃 / 不可安装，附发布时间与当前 DSH 版本），选中任意版本即可更新、回退或重新安装；Web 端由 Host 调用官方 `dsh plugin --profile <profile> add @him666233/dsh-inline-diff@<版本>` 一键安装，失败时 CLI 自动回滚并显示错误码与日志尾部，成功后提示重启 DSH 生效；桌面端受官方「先退出桌面端再改 profile」约束，v1 显示版本列表与可复制命令。
 - **命令执行行**：`bash` / `pwsh` / `win_bash` 使用终端图标、等宽标题与类终端布局，头部显示状态与非零退出码；IN/OUT 各自独立滚动（IN 限高更矮），滚动条贴卡片右边缘。
 - **搜索与网页工具行**：`grep` / `glob` / `web_search` / `web_fetch` 也纳入「其它工具调用」的展开风格，显示类别图标、关键词/路径/URL 摘要、匹配数/文件数/来源数/HTTP 状态徽标，以及默认展开的 IN/OUT。
+- **第三方工具自动兼容（1.4.1 新增）**：插件向 Host 读取当前注册的 wire 工具名，把**还没有自己视图**的第三方工具（例如 `dsh-ssh` 的 `ssh_exec` / `ssh_upload` / `ssh_cluster`、MCP 桥接工具等）也自动纳入同一套展开风格 IN/OUT 行，无需逐个适配；官方富结果卡片（读取、待办、提问、图片、Office 等）与第三方插件自带的定制视图保持原样，本插件只在“没有视图”时兜底。这些行**完全复用「其它工具调用」的现有配置**——界面语言、外壳/内部配色、浅色/深色/跟随外观、入场/输出动效与「过程折叠」全部照常生效，**没有新增设置项**。
+- **额外可读目录（1.4.1 设置）**：工作区外文件默认只在实时编辑时用快照显示完整差异；历史回放/`str_replace_editor` 需要读取“当前文件”补齐行号。设置页新增「额外可读目录（工作区外）」：用户显式添加目录后，Host 只读 API 才允许读取这些目录内的文本文件（≤2MB），用于恢复行号与全文对照；目录保存在 Host，拒绝文件系统根，最多 12 个。它只影响读取权限，不新增卡片样式/动效配置。
 - **工具行差异化**：命令行使用终端图标、等宽标题和绿色强调；搜索类工具使用放大镜图标，网页类工具使用地球图标；通用工具调用带「工具调用」标签。所有展开风格工具行与内联差异卡片共用同一款「轨迹」胶囊按钮。
 - **IN/OUT 分段状态**：命令执行卡片与其它工具调用卡片的左侧色条按「输入 / 输出」两段独立显示状态——IN 段：准备参数 / 参数已提交等待输出=主题色（脉动）、输入侧完成=绿色、输入侧失败=红色；OUT 段：执行中=主题色（脉动，含「执行中…」占位）、输出成功=绿色、执行失败 / 非零退出码 / 被信号中止=红色、用户中止=警告色。错误会按 `INVALID_ARGS` / `UNKNOWN_TOOL` / `ABORTED_BEFORE_DISPATCH`（输入侧）与其余执行期错误（输出侧）分别归因，缺少错误码时若原始参数不是合法 JSON 对象也归为输入侧；输入输出互不干扰，输入侧失败时 OUT 段标为「跳过」并保持中性色。
 - **分段文字配色**：输入侧失败时 IN 区代码为红字，输出侧失败时 OUT 区代码为红字；正常内容使用跟随内部配色与浅色/深色外观的默认前景色，浅色内部配色下不会出现浅底浅字。运行/准备中的分段色条按状态做明暗呼吸（脉动）；标签与分隔线也使用内部配色 token。
@@ -106,13 +108,15 @@ Read 工具行保留 DSH 原生卡片与展开行为；折叠时在文件名右�
 
 | 环境 | 支持情况 |
 | --- | --- |
-| DSH 桌面端（Desktop profile） | ✅ 已验证 |
-| DSH Web UI（Web profile） | ✅ 已验证（DSH 0.2.2-rc.2）；需在该 profile 单独安装本插件 |
+| DSH 桌面端（Desktop profile） | ✅ 已验证（1.4.0 基线；1.4.1 与 Web 共用同一 Host 路由 / tools 服务 / 前端代码，未重启复测） |
+| DSH Web UI（Web profile） | ✅ 已验证（DSH 0.2.2-rc.5）；需在该 profile 单独安装本插件 |
+| 第三方插件新增的工具（dsh-ssh、MCP 等） | ✅ 1.4.1 起自动纳入「其它工具调用」展开风格；工具自带视图时让位，不覆盖 |
+| 操作系统 | Windows 10/11 ✅ 实机验证；macOS ✅ 代码级支持（无实机验证，CI 已配置 macOS 矩阵） |
 | 浏览器 / Electron 内嵌 WebView | ✅ 客户端使用标准 Web platform |
 | 第三方主题 / 桌宠 / 皮肤 | ✅ 颜色跟随主题 token；已适配会拦截点击重放折叠的主题（如 claude-style）：卡片头部带 `aria-haspopup` 豁免、只响应真实用户手势，主题与桌宠属于外部插件，不影响本插件安装 |
 | 启动动画类插件（自定义开场动画等） | ✅ 互不接管 slot；动画关键帧与样式使用插件命名空间（`dsh-inline-diff-*`）；Read 范围观察器只响应 Read 行相关变更 |
 
-**DSH 版本范围（`engines.dsh`）**：`>=0.2.2-rc.1 <0.3.0`。当前版本在 DeepSeek Harness `0.2.2-rc.1`（desktop profile）与 `0.2.2-rc.2`（Web profile，含插件加载、快照、语法高亮、主题/外观、设置页与更新面板）实测通过；`engines.dsh` 未变更。
+**DSH 版本范围（`engines.dsh`）**：`>=0.2.2-rc.1 <0.3.0`。当前版本在 DeepSeek Harness `0.2.2-rc.5`（Web profile：插件加载、Host `/tools` 工具清单、第三方 `ssh_*` 展开行、Read 原生行、快照、语法高亮、主题/外观、设置页与更新面板）实测通过；`0.2.2-rc.1` / `0.2.2-rc.2` 为既有的桌面/Web 验证基线。Windows 11（Node 24.22.1）实机跑通 `npm run check` 与 195 项测试；macOS 无实机，按代码级审计 + Windows/macOS/Ubuntu 三平台 CI 矩阵覆盖（CI 在推送后实际运行）。`engines.dsh` 未变更。
 
 插件在 `plugin/package.json` 声明了 `engines.dsh`；DSH 插件加载器会校验该范围，**不在范围内时拒绝自动加载**，避免把未验证的宿主版本当成可用环境。插件清单同时声明 `dsh.client.platform: web`，Host 端只使用通用的 `webServer`、`tools/result` 与 Node.js 文件读取能力，不依赖 Electron 或桌面专属 API。
 
@@ -177,7 +181,7 @@ pnpm add link:/absolute/path/to/dsh-inline-diff/plugin
 
 ### 升级与卸载
 
-- **升级（npm 安装的版本）**：`dsh plugin add @him666233/dsh-inline-diff@<版本>`；或在插件页卸载后重新安装最新版。第三方组合包不提供原地升级按钮。
+- **升级（npm 安装的版本）**：`dsh plugin add @him666233/dsh-inline-diff@<版本>`；或在插件页卸载后重新安装最新版（插件页是否提供原地升级按钮取决于当前 DSH 版本）。
 - **卸载**：`dsh plugin remove @him666233/dsh-inline-diff`，或在插件页点击「卸载」（需确认）。
 - **本地 link / Release 安装的版本**：替换 `plugin/` 目录后刷新或重启；卸载时在 profile 的 `package.json` 中移除依赖与 `dsh.profile.bundles` 中的条目。
 - 同一个 profile 中不要同时保留 link 版与 npm 版，否则会重复注册同一批 slot（表现为卡片重复或报重复 key）。
@@ -193,7 +197,7 @@ pnpm add link:/absolute/path/to/dsh-inline-diff/plugin
 npm install
 npm run build      # -> plugin/client.js + plugin/cordis.patch.yml（包名从 plugin/package.json 读取）
 npm run check      # 语法 / JSON 校验，并校验已提交的 client.js、cordis.patch.yml 与源码/包名一致
-npm test           # 差异引擎、卡片模型、语言识别、高亮配色、工具状态、read range、i18n、版本更新与安全回归单元测试（共 164 项）
+npm test           # 差异引擎、卡片模型、语言识别、高亮配色、工具状态、read range、第三方工具清单、API 路径、i18n、版本更新与安全回归单元测试（共 195 项）
 ```
 
 需要 Node.js 20+，构建期依赖 `esbuild` 与 `highlight.js`（语法模块会随 `client.js` 一起打包）。插件运行时无额外依赖，只使用 React 与宿主提供的 Web 服务。
@@ -229,7 +233,7 @@ npm test           # 差异引擎、卡片模型、语言识别、高亮配色�
 
 | 设置项 | 选项 | 说明 |
 | --- | --- | --- |
-| 界面语言 / Language | 中文 / English / **跟随 DSH（默认）** | 插件自身界面的语言。默认**跟随 DSH**：DSH 为中文时显示中文，其它语言时显示英文（缺字典时按英文兜底）。切换立即生效、无需刷新，不会改动 DSH 全局语言，也不影响其它插件。文档语言：中文为默认（本文件），英文见 [README.en.md](README.en.md)。 |
+| 界面语言 / Language | 中文 / English / **跟随 DSH（默认）** | 插件自身界面的语言。默认**跟随 DSH**：DSH 为中文时显示中文；DSH 已识别为其它语言（English、日本語等）时显示英文；宿主语言无法识别时回退中文；字典缺 key 时按中文字典兜底。切换立即生效、无需刷新，不会改动 DSH 全局语言，也不影响其它插件。文档语言：中文为默认（本文件），英文见 [README.en.md](README.en.md)。 |
 
 **版本与更新（1.4.0 新增）**：
 
@@ -242,14 +246,15 @@ npm test           # 差异引擎、卡片模型、语言识别、高亮配色�
 
 > 设置页顶部同时展示一条醒目的**原创声明**：本项目为完全原创作品，与任何同名/相似插件（包括 [JanEickholt/dsh-inline-diff](https://github.com/JanEickholt/dsh-inline-diff)）没有任何关系，详见文首声明。
 
-四项展示风格（默认：文件修改卡片=展开风格，命令执行行、其它工具调用、过程折叠=DSH 原生）：
+四项展示风格（默认：文件修改卡片=展开风格，命令执行行、其它工具调用、过程折叠=DSH 原生；另有一项「额外可读目录」高级设置，只影响工作区外文件的读取权限）：
 
 | 设置项 | 选项 | 说明 |
 | --- | --- | --- |
 | 文件修改卡片 | 展开风格 / DSH 原生 | 展开风格 = 本插件的逐次内联差异卡片；DSH 原生 = 官方文件修改行；下方可单独设置外壳/内部配色 |
 | 命令执行行 | 展开风格 / DSH 原生 | 展开风格 = 默认展开 IN/OUT 的扁平命令卡片；DSH 原生 = 官方 bash / pwsh / win_bash 行；下方可单独设置外壳/内部配色 |
-| 其它工具调用 | 展开风格 / DSH 原生 | 展开风格 = 普通/详情/搜索/网页类工具默认展开 IN/OUT（含 `grep` / `glob` / `web_search` / `web_fetch`）；读取、待办、提问、图片等富结果卡片保持原生；下方可单独设置外壳/内部配色。开启本项会即时生效，并在「过程折叠」为 DSH 原生时自动把它切到「不折叠」，否则已完成的工具行会被 DSH 折叠组遮住 |
+| 其它工具调用 | 展开风格 / DSH 原生 | 展开风格 = 普通/详情/搜索/网页类工具默认展开 IN/OUT（含 `grep` / `glob` / `web_search` / `web_fetch`）；1.4.1 起，Host 全局可见且没有自己视图的第三方工具（如 dsh-ssh 的 `ssh_*`）也自动按本项接管。读取、待办、提问、图片等富结果卡片保持原生；下方可单独设置外壳/内部配色。开启本项会即时生效，并在「过程折叠」为 DSH 原生时自动把它切到「不折叠」，否则已完成的工具行会被 DSH 折叠组遮住 |
 | 过程折叠（整份对话） | 不折叠 / DSH 原生 | 不折叠 = 写入 DSH `ui-chat.transcriptView = verbose` 偏好；DSH 原生 = 保留用户已有偏好；切回时会尽量恢复启用前的值 |
+| 额外可读目录（工作区外，高级） | 目录列表（最多 12 个） | 用户显式授权后，历史回放/`str_replace_editor` 才能读取工作区外文件的“当前文件”补齐行号；清单保存在 Host（`~/.dsh/dsh-inline-diff/read-roots.json`），拒绝文件系统根；不改变卡片样式或动效 |
 
 语法高亮与语言徽章（1.1.0 新增，独立于上面的展示风格）：
 
@@ -291,20 +296,27 @@ dsh-inline-diff/
 │  ├─ syntax-styles.js         # 语法高亮配色、字体强调与语言徽章样式
 │  ├─ enhanced-tools.jsx       # 展开风格工具调用行（搜索/网页/普通/详情）
 │  ├─ enhanced-shell.jsx       # 展开风格命令执行行（bash/pwsh/win_bash）
+│  ├─ surfaces.js              # 外观效果（原生/磨砂玻璃/液态玻璃）的唯一事实来源
+│  ├─ glass-filters.js         # 液态玻璃全局折射 SVG 滤镜与能力门控（纯副作用模块）
+│  ├─ motion.js                # 入场/输出动效常量与呼吸动画纯函数
+│  ├─ use-pulse-sync.js        # 卡片内圆点与状态条的呼吸动画相位同步 hook
+│  ├─ use-settings.js          # 设置快照的共享 React hook
+│  ├─ tool-catalog.js          # 第三方工具兼容清单（纯函数：筛出没人注册视图的工具名）
+│  ├─ dynamic-tool-views.js    # 第三方工具动态兜底控制器（补注册 / 让位 / 轮询）
 │  ├─ read-range.js            # Read 行范围提取（纯函数）
 │  ├─ read-range-dom.js        # 页面级 Read 范围挂载（MutationObserver）
 │  ├─ settings.js              # 设置存储、迁移、默认值与 DSH 偏好联动
 │  ├─ settings-ui.jsx          # 设置页/弹窗（含语言切换与原创声明）
 │  ├─ styles.js                # 主题 token 与卡片/弹窗样式
-│  ├─                # 版本与更新纯逻辑（semver 比较、版本表、动作判定）
+│  ├─ updates.js               # 版本与更新纯逻辑（semver 比较、版本表、动作判定）
 │  └─ api.js / store.js        # Host 通信 / 弹窗状态
 ├─ plugin/                     # 可安装插件包（Host + 构建产物 client.js + locale + icon）
-│  ├─ index.js                 # Host 半区：快照 LRU、只读文件 API 与版本更新 API
+│  ├─ index.js                 # Host 半区：快照 LRU、只读文件 API、工具清单与版本更新 API
 │  ├─ client.js                # 构建产物（勿手改；由 build.mjs 生成）
 │  ├─ cordis.patch.yml         # 构建产物（bundle 插件行，包名自动写入）
 │  ├─ package.json             # npm 包清单（dsh.bundle.patch / engines.dsh / dsh.client）
 │  └─ README.md / README.en.md # npm 页面文档（中/英）
-├─ tests/                      # 纯 Node 单元测试（差异、模型、语言、高亮、配色、状态、read range、i18n、安全）
+├─ tests/                      # 纯 Node 单元测试（差异、模型、语言、高亮、配色、状态、read range、第三方工具清单/动态视图、API 路径、i18n、安全）
 ├─ docs/                       # 中文截图与说明文档
 │  ├─ display-behavior.md      # 显示行为说明（中文）
 │  ├─ display-behavior.en.md   # 显示行为说明（英文）
@@ -314,9 +326,10 @@ dsh-inline-diff/
 ├─ scripts/                    # 维护脚本（不属于插件运行时）
 │  ├─ set-package-name.mjs     # 一键改 npm 包名（同步 manifest / patch / client.js / README）
 │  └─ build-release.mjs        # 一键打包 GitHub Release 附件（两个 zip / SHA256SUMS / 发布完整性校验）
-├─ .github/workflows/ci.yml    # CI：npm run check + npm test
+├─ .github/workflows/ci.yml    # CI：ubuntu / windows / macOS 三平台 npm run check + npm test
 ├─ build.mjs                   # esbuild 打包 / 构建校验（包名单一来源）
 ├─ package.json                # 工作区清单（private，仅开发用）
+├─ .gitignore / .gitattributes # 忽略规则 / 强制 LF 换行（Windows 克隆跑 check 用）
 ├─ README.md / README.en.md    # 主文档（中文 / 英文）
 ├─ CHANGELOG.md / LICENSE
 ```
@@ -332,9 +345,12 @@ dsh-inline-diff/
 - 监听 `tools/result`，对成功的 `edit` / `write` 截取 `{ path, before, after, operation }`，按「会话 + 调用 ID」保存为**内存**快照（LRU：最多 240 条、每侧文本上限 4MB，并额外限制**总量 64MB**；任一预算超限时从最旧条目淘汰；超大写入不保存快照，卡片退化为差异块模式）；
 - 提供**只读展示 API 与受限的版本更新 API**，所有路径（含 `/ping`、404、405）先经过浏览器信任边界校验：
   - 准入优先复用 DSH `connection` 服务的 `admit(req)`（官方 Host / Origin / 跨站围栏 + HttpOnly、SameSite=Strict 的浏览器会话 Cookie）；
-  - 无 `connection` 服务的嵌入式 profile 回退本地围栏：`Host` 必须是 loopback 或监听器绑定地址、`Origin` 必须同 authority、拒绝 `sec-fetch-site: cross-site`；任何异常都**不 fail-open**；
+  - 无 `connection` 服务的嵌入式 profile 回退本地围栏：`Host` 必须是 loopback 或监听器绑定地址、`Origin` 必须同 authority、拒绝 `sec-fetch-site: cross-site`；`Host` 是 loopback 时还要求 TCP 对端也是 loopback（防 DNS rebinding），任何异常都**不 fail-open**；
   - `POST /dsh-inline-diff/api/snapshot`：按 `sessionId + callId` 返回快照；
-  - `POST /dsh-inline-diff/api/read`：在请求方给定的根目录内读取文件（realpath 两层 containment；单文件上限 2MB；15 秒读超时；最多 8 个并发读取，超限返回 429/504；二进制返回 `binary`，并剥离 UTF-8 BOM）；
+  - `POST /dsh-inline-diff/api/read`：只读取 DSH `workspaceRegistry` 中**已注册 workspace 或其子目录**下的文件，以及设置页显式授权的「额外可读目录」内文件（registry 不可用时回退旧的调用方根 + realpath 围栏；registry 存在但故障时 fail-closed）；realpath 两层 containment、单文件上限 2MB、15 秒读超时、最多 8 个并发读取（超限 429/504）；二进制返回 `binary`，并剥离 UTF-8 BOM；
+- `GET /dsh-inline-diff/api/read-roots`：读取用户显式授权的额外可读目录清单（Host 持久化，最多 12 条）；
+- `POST /dsh-inline-diff/api/read-roots`：整份替换授权目录清单；校验绝对路径、必须存在且是目录、拒绝文件系统根、去重并限制条数；错误回稳定 code；
+  - `GET /dsh-inline-diff/api/tools`：从 DSH `tools` 服务导出当前**全局可见**的 wire 工具名（去重、排序，单次最多 500 条），供浏览器半侧为第三方工具补展开风格视图；只回名字，不含 schema、参数或结果；`tools/change` 时失效 Host 缓存；
   - `GET /dsh-inline-diff/api/ping`：健康检查（返回当前快照条数），同样受准入保护（浏览器 profile 需要会话 Cookie）；
   - `GET /dsh-inline-diff/api/update/versions`：读取 npm `@him666233/dsh-inline-diff` 的版本列表（registry packument，Host 侧 60 秒缓存、12 秒超时），返回当前已装版本、DSH 版本、安装方式与全部版本；仅在用户点「检查更新」时访问外网；
   - `POST /dsh-inline-diff/api/update/install`：校验目标版本必须存在于 registry 列表且可安装，然后串行 spawn 官方 `dsh plugin --profile <name> add <包>@<版本>`（argv 直传、不经 shell；240 秒超时并杀进程树），成功后复核 node_modules 中实际版本；Web 端可用，桌面端返回可复制的降级命令；
@@ -343,8 +359,10 @@ dsh-inline-diff/
 
 ### Client 端
 
-- 通过 `ctx.slots` 以 keyed `tool.call.toolview` 接管 `edit` / `write` / `str_replace_editor` 的文件卡片、`bash` / `pwsh` / `win_bash` 的命令行、以及普通/详情/搜索/网页类工具行；**不 shadow** `conversation.chat.node` 的 tool-call 条目——dsh ≥0.2.2-rc.1 的官方 Tool 层（`@deepseek-ai/dsh-client-ui-tool`）拥有该条目并声明 `tool.call.toolview` 子槽，重复声明会抛 `slot "tool.call.toolview" is already declared`，因此插件只做 keyed 注册，由官方 tool-call 树按工具名分发；未注册的工具沿用官方通用行；
-- 展示风格变化时释放并重建这组注册：切回 DSH 原生后官方富结果卡片原样恢复；
+- 通过 `ctx.slots` 以 keyed `tool.call.toolview` 接管 `edit` / `write` / `str_replace_editor` 的文件卡片、`bash` / `pwsh` / `win_bash` 的命令行、以及普通/详情/搜索/网页类工具行；**不 shadow** `conversation.chat.node` 的 tool-call 条目——dsh ≥0.2.2-rc.1 的官方 Tool 层（`@deepseek-ai/dsh-client-ui-tool`）拥有该条目并声明 `tool.call.toolview` 子槽，重复声明会抛 `slot "tool.call.toolview" is already declared`，因此插件只做 keyed 注册，由官方 tool-call 树按工具名分发。内建工具行按设置接管；1.4.1 起，Host 全局可见且没有自己视图的第三方工具由动态兜底接管；其余无法接管的工具（注册在 agent scope、未开启「其它工具调用 = 展开风格」、视图注册失败等）沿用官方通用行；
+- 第三方工具兜底：`dynamic-tool-views.js` 以 30 秒轮询 + 窗口 focus 刷新 Host `/tools` 清单，用 `ctx.slots.entries('tool.call.toolview')` 判断每个 key 是否已被占用；只为“没人注册视图”的工具名补展开风格行，官方富结果卡片与第三方自带视图一律跳过；若别的注册者在本插件注册之后才出现同名视图，控制器释放自己的兜底注册（让位）。设置切回 DSH 原生时立即释放全部动态视图并停止轮询；旧版 DSH 缺少 `slots.entries()` 时该兜底整体禁用，只保留内建清单（不冒险覆盖官方富卡片）；
+- Host API 路径由 `resolveApiPath()` 按 `document.baseURI` 的目录部分解析，部署在带路径前缀的反向代理后（如 `/dsh/`）仍能命中同源前缀路由；根路径部署与桌面 `dsh-app://app/` 的解析结果与旧版一致；
+- 展示风格变化时释放并重建这组注册：切回 DSH 原生后官方富结果卡片原样恢复；动态兜底与内建清单互不重复（`tool-catalog.js` 负责去重与上限）；
 - 轨迹跳转统一为带文字的「轨迹」胶囊按钮，内联差异卡片与所有展开风格工具行位置一致；
 - 纯浏览器侧实现 LCS 对齐（单侧 4000 行 / 250 万格预算，超限退化为前后缀+替换块的粗对齐）、上下文 ±3 行的 hunk 分组、行内 token diff（单行 4000 字符、16 万格、整段 200 万格预算）、移动块配对（2 行以上或单行显示宽度 ≥12 格，最多 120 行，容忍边界空行）、被动位移 gap、超大文件预算回退；
 - 语言识别与高亮：`languages.js` 在模块加载期构建扩展名/文件名 Map（O(1) 查询）；`highlight.js` 用 highlight.js 语法把可用全文的每一侧各分词一次，再把高亮 HTML 解析回逐行 token 区间并按行号索引（历史回放没有完整全文时按修改块本地分词），结果以 WeakMap 缓存在 diff 上；单侧超过 200k 字符或 4000 行、单行超过 2000 字符时自动放弃高亮并回退默认前景色；
@@ -372,12 +390,13 @@ dsh-inline-diff/
 | 语言识别 | 扩展名 / 特殊文件名 / shebang | 纯文本标记 | 不做高亮 |
 | Host API 准入 | DSH `connection.admit` | 本地 loopback / 绑定地址围栏 | 403 拒绝，客户端 api 返回 null，卡片降级显示 |
 | 工具视图注册 | keyed `tool.call.toolview` 接管 | 注册失败时释放并恢复官方行 | 官方通用行（不抛错中断整组注册） |
+| 第三方工具清单 | Host `/tools` + 槽位占用检查 | 路由不可用 / 超时 / 响应异常 → 只用内建清单 | 官方通用行（不抢占用中的 key、不覆盖已有视图） |
 
 > 上表对应实现分散在各模块注释中；新增功能时请沿用同样的回退层级，并在最终回退处给出可读的原因说明，而不是静默失败或抛错。
 
 ### 数据与隐私
 
-- 默认无网络请求、无遥测、无外部服务；不读取 DSH 会话外文件；
+- 默认无网络请求、无遥测、无外部服务；展示读取只允许 DSH 已注册 workspace（registry 不可用的嵌入式 profile 回退旧行为）以及用户在设置页显式授权的「额外可读目录」，不读取任意宿主机文件；
 - 例外仅限用户主动点击「检查更新 / 安装」：Host 访问 npm registry 获取版本列表、调用本机 `dsh` CLI 安装插件；请求只包含包名/版本号，不发送会话内容、文件内容、密钥或设备信息。
 - Host API 有浏览器信任边界与输入/超时/并发上限（见上文 Host 端）；更新 API 还额外做 profile 名白名单、安装锚点与 CLI 绝对路径校验、版本 semver+registry 白名单校验、registry 响应 2MB/200 版本上限、单任务互斥与 240 秒超时杀进程树，CLI 参数以 argv 直传、不经过 shell；客户端无 `innerHTML` / `dangerouslySetInnerHTML` / `eval`，高亮 HTML 只被解析为**纯文本 token**；
 - 快照有条数与总字节双预算，diff 物化有行数/单行上限，超限时降级展示而不是卡死；
@@ -402,11 +421,21 @@ dsh-inline-diff/
 - **语言标识**：「语言标识 = 隐藏」隐藏全部语言徽章（含纯文本标记与未知语言徽章），「未知语言」选项只在徽章可见时生效；语言识别与语法高亮仍照常工作。
 - **富结果卡片**：读取、待办、提问、图片等富结果卡片不纳入展开风格，保持 DSH 原生交互。
 - **搜索/网页行交互**：展开风格下搜索/网页调用以 IN/OUT 原文展示；官方卡片里的「点击匹配文件打开」「点击 URL 打开新标签页」等交互只保留在「DSH 原生」模式。
-- **展开风格的工具覆盖范围**：命令执行、通用、详情、搜索与网页工具行通过 `tool.call.toolview` 的 keyed 注册接管，只对插件登记过的工具名生效；未登记的工具在 dsh ≥0.2.2-rc.1 下沿用官方通用行（插件不再覆盖整棵 tool-call 树，避免与官方 Tool 层重复声明子槽）。
-- **版本与更新的限制**：更新面板列出的是 npm 已发布版本；未发布的新版本不会出现。一键安装会以对应 npm 发布版覆盖当前 profile 中的安装（本地开发构建会被覆盖，开发环境请谨慎点击）；安装后必须重启 DSH（页面刷新不够）；同版本重装可能被 pnpm 判定为已是最新而跳过；桌面端 v1 不提供运行中一键安装，只显示版本列表与手动命令，需先完全退出 DSH。
+- **展开风格的工具覆盖范围**：命令执行、通用、详情、搜索与网页工具行通过 `tool.call.toolview` 的 keyed 注册接管；自 1.4.1 起，Host 全局可见、且**没有自己视图**的第三方工具（dsh-ssh 的 `ssh_*`、MCP 桥接工具等）也会自动纳入「其它工具调用」。注册在某个 agent scope 里的工具（少数实验插件会按 agent 注册）不在全局清单中，仍沿用官方通用行；第三方自带视图的工具由本插件让位；
+- **第三方工具清单的刷新节奏**：Host `/tools` 结果每 30 秒或窗口重新获得焦点时刷新；运行中新装/卸载的第三方工具最迟一个刷新周期后生效（已渲染的历史行不受影响）。
+- **反向代理**：Host 路由注册在服务器根的 `/dsh-inline-diff/api`，客户端按 `document.baseURI` 的路径前缀发出请求；代理需要按常规做法**剥离前缀**再转发（例如 `https://host/dsh/...` → 后端 `/dsh-inline-diff/api/...`）。若代理保留前缀转发，需要改写后端路由或额外配置。
+- **设置按浏览器 origin 独立**：设置存在 `localStorage`，Web（`http://127.0.0.1:<port>`）与桌面（`dsh-app://app`）是不同 origin，不共享；Web 端口变化也可能看不到之前的设置。需要跨端共享时应改存 Host 配置，当前版本没有做。
+- **macOS 路径规范化**：Host 围栏依赖 `realpath` + `path.relative`；在默认大小写不敏感、Unicode 可能 NFD 化的 APFS 上，若请求路径与磁盘规范化形式不一致，展示读取会 fail-closed 返回 403 并降级为元数据差异块（不越权、不崩溃）。Windows 已实测；macOS 无实机。
+- **版本与更新的限制**：更新面板列出的是 npm 已发布版本；未发布的新版本不会出现。一键安装会以对应 npm 发布版覆盖当前 profile 中的安装（本地开发构建会被覆盖，开发环境请谨慎点击）；安装后必须重启 DSH（页面刷新不够）；同版本重装可能被 pnpm 判定为已是最新而跳过；一键安装要求标准安装锚点（`node_modules/@deepseek-ai/dsh/package.json` 与存在的 `lib/bin.js`），源码/非标准布局会降级为可复制的手动命令；桌面端 v1 不提供运行中一键安装，只显示版本列表与手动命令，需先完全退出 DSH。
 - **动效**：入场动画只针对运行中卡片与弹窗打开等“从无到有”的瞬间，历史回放不加动画；开启系统「减少动效」时全部关闭。
 - **跨 profile**：插件按 profile 安装，不自动同步。
-- **界面语言只作用于本插件**：1.3.0 的语言设置只影响本插件自己的界面文案，不修改 DSH 全局语言，也不影响其它插件；选择「跟随 DSH」时随 DSH 全局语言切换（无法识别 host 语言或缺少对应字典时按中文兜底）。
+- **工作区外文件**：实时 `edit` / `write` 卡片使用 Host 执行快照，能正常显示完整差异（不依赖 `/read`）；但应用重启/快照丢失后的历史回放、以及 `str_replace_editor`（本就不保存快照），只显示工具结果里的修改块——行号待定、全文对照不可用。原因：`/read` 只允许会话工作区内路径（以及设置页显式授权的额外目录），且历史回放还要求会话 cwd 是已注册 workspace。可在「额外可读目录（工作区外）」中添加这些文件所在目录恢复行号/全文对照。
+- **嵌入式 profile 的读取围栏**：没有 `workspaceRegistry` 的 profile（少数嵌入式/旧宿主）仍按调用方给出的根做 realpath 围栏，以兼容历史回放；这种 profile 下同源脚本理论上可指定任意可读文本文件（≤2MB）。标准 Web/桌面 profile 有 registry，走 workspace 白名单。
+- **路径展示**：文件在会话 cwd 内显示相对路径；cwd 外时，Windows 显示绝对路径（盘符路径不做 `~` 缩写），macOS/POSIX 在 home 下显示 `~/...`、否则绝对路径；卡片标题/悬浮 title 使用完整绝对路径。长路径按 CSS 省略号截断，悬浮可看全路径；`openFile` 使用绝对路径。
+- **更新供应链**：更新面板信任 npm registry 与发布账号，未做包签名校验；发布账号被攻破时可能安装恶意版本。
+- **额外可读目录按 DSH_HOME 共享**：清单固定为 `$DSH_HOME/dsh-inline-diff/read-roots.json`，同一台机器上的 Web/桌面 profile 共用同一份授权，不按 profile 隔离；如需隔离可后续改为 profile 目录。
+- **额外可读目录设置 API**：同源脚本（XSS/恶意主题）可以调用该设置 API 自行添加目录；它受浏览器信任边界保护，但无法区分真实用户与同源脚本。请只安装可信插件/主题，并只添加可信目录。
+- **界面语言只作用于本插件**：1.3.0 的语言设置只影响本插件自己的界面文案，不修改 DSH 全局语言，也不影响其它插件；选择「跟随 DSH」时随 DSH 全局语言切换：宿主为中文 → 中文，宿主已识别为其它语言 → 英文，宿主语言无法识别 → 中文；字典缺 key 时回退中文字典。
 - **文档与截图为中英两套**：中文为默认主文档（`README.md`、`docs/*.md`），英文为对照文档（`README.en.md`、`docs/*.en.md`）；截图分别放在 `docs/` 与 `docs/en/`，文件名一一对应。
 
 ## 开发与贡献
@@ -419,7 +448,7 @@ npm test
 ```
 
 - 修改 `src/client/` 后需要重新执行 `npm run build`，安装的是 `plugin/` 中构建后的 `client.js`；`npm run check` 会校验已提交的 `client.js`、`cordis.patch.yml` 与源码、包名一致；
-- 提交前请确保 `npm run check` 与 `npm test` 通过；测试覆盖差异对齐、卡片模型、语言识别、highlight.js token 提取、语法高亮配色安全约束、IN/OUT 失败归因、read range、行号图例单侧适配（`gutterSides`）、i18n 语言解析/回退/默认值迁移、版本更新纯逻辑与安全回归；
+- 提交前请确保 `npm run check` 与 `npm test` 通过；测试覆盖差异对齐、卡片模型、语言识别、highlight.js token 提取、语法高亮配色安全约束、IN/OUT 失败归因、read range、行号图例单侧适配（`gutterSides`）、第三方工具清单筛选与动态视图让位、API 路径（含反向代理前缀）、LF/CRLF 归一化判等、旧版宿主无 `slots.entries()` 回退、动效/表面/设置联动、i18n 语言解析/回退/默认值迁移、版本更新纯逻辑与安全回归；
 - 新增界面文案必须同时写入 `src/client/locales.js` 的 `zh` 与 `en` 字典（两边键集合与 `{占位符}` 保持一致，`tests/locales.test.mjs` 会断言）；默认界面语言为「跟随 DSH」（`auto`），新增/修改代码写详细中文注释并说明失败时的回退路径；
 - 项目身份集中维护在 [`src/client/project.js`](src/client/project.js)；仓库改名时同步更新该文件、`package.json` 的 `homepage` / `repository` / `bugs` 及 README 链接即可；
 - 文档：中文为主（`README.md`、`docs/*.md`），英文为对照（`README.en.md`、`docs/*.en.md`）；截图中文放 `docs/`、英文放 `docs/en/`，文件名一一对应；
@@ -430,10 +459,11 @@ npm test
 
 ## 更新日志
 
-当前版本：**1.4.0**（2026-11-12）。版本日期索引：
+当前版本：**1.4.1**（2026-11-21）。版本日期索引：
 
 | 版本 | 发布日期 | 摘要 |
 | --- | --- | --- |
+| 1.4.1 | 2026-11-21 | 第三方工具自动兼容（Host `/tools` 工具清单 + 动态 keyed 视图补注册，dsh-ssh 的 `ssh_*`、MCP 等无需逐个适配；官方富卡片与第三方自带视图让位）、额外可读目录设置（工作区外历史回放）、代码字体 / LF-CRLF / 反向代理前缀 / POSIX 进程组修复、三平台 CI、DSH 0.2.2-rc.5 实测、测试增至 195 项 |
 | 1.4.0 | 2026-11-12 | 卡片/输出/弹窗动效（遵循减少动效偏好）、设置页自带版本检查与一键更新/回退、默认界面语言改为跟随 DSH（含旧存档迁移）、行内改动片段语法高亮与强制反色外壳可读性修复、验证 DSH 0.2.2-rc.2 |
 | 1.3.0 | 2026-11-08 | 中英双语界面与设置页语言切换（默认中文）、英文文档与双语截图、设置页/文档原创声明、安全加固、详细中文注释与多级回退、首次发布 npm 包 |
 | 1.2.6 | 2026-11-07 | 官方主题外壳配色、命令失败卡片底部多余外壳、行号图例对齐与单侧适配、徽章隐藏语义等修复 |

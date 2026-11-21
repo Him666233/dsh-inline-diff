@@ -6,6 +6,7 @@
 
 | 版本 | 发布日期 | 摘要 |
 | --- | --- | --- |
+| [1.4.1] | 2026-11-21 | 第三方工具自动兼容（Host `/tools` 工具清单 + 动态 keyed 视图补注册；dsh-ssh 的 `ssh_*`、MCP 桥接工具等无需逐个适配；官方富卡片与第三方自带视图让位）、额外可读目录设置（工作区外历史回放）、代码字体 / LF-CRLF / 反向代理前缀 / POSIX 进程组修复、三平台 CI、DSH 0.2.2-rc.5 实测、测试增至 195 项 |
 | [1.4.0] | 2026-11-12 | 卡片/输出/弹窗动效（遵循减少动效偏好）、设置页自带版本检查与一键更新/回退、默认界面语言改为跟随 DSH（含旧存档迁移）、行内改动片段语法高亮与强制反色外壳可读性修复、DSH 0.2.2-rc.2 验证 |
 | [1.3.0] | 2026-11-08 | 中英双语界面与设置页语言切换（默认中文）、英文文档与双语截图、原创声明、安全加固（2 HIGH + 3 MEDIUM）、详细中文注释与多级回退、首次发布 npm 包 |
 | [1.2.6] | 2026-11-07 | 修复官方主题外壳配色、命令失败卡片底部多余外壳、行号图例对齐与单侧适配、徽章隐藏语义等 |
@@ -23,6 +24,56 @@
 | [0.2.1] | 2026-11-03 | 安装与样式修复 |
 | [0.2.0] | 2026-11-03 | 展开风格与工具行配置 |
 | [0.1.0] | 2026-11-02 | 内部原型 |
+
+## [1.4.1] - 2026-11-21
+
+### 新增
+
+- **第三方工具自动兼容**：Host 半侧新增只读 `GET /dsh-inline-diff/api/tools`，从 DSH `tools` 服务导出当前全局可见的 wire 工具名（去重、排序、最多 500 条，`tools/change` 失效缓存；只回名字，不含 schema、参数或结果）。浏览器半侧新增 `tool-catalog.js`（纯函数筛选）与 `dynamic-tool-views.js`（可注入控制器），把**还没有自己视图**的第三方工具（dsh-ssh 的 `ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster`、MCP 桥接工具等）自动纳入「其它工具调用」展开风格，不必逐个登记工具名。
+- **让位与占用检查**：动态注册前用 `ctx.slots.entries('tool.call.toolview')` 检查 key 是否已被官方富结果卡片或第三方定制视图占用；占用则跳过，注册后若别的注册者后来出现同名视图，控制器释放自己的兜底注册。设置切回 DSH 原生时立即释放全部动态视图并停止轮询；清单每 30 秒或窗口 focus 刷新一次。
+- **工具行摘要字段扩展**：通用工具行摘要新增 `alias` / `host` / `localPath` / `remotePath` 等常见字段，`ssh_upload` / `ssh_download` / `ssh_exec` 之类第三方工具即使没有 `description` 也能显示一行有意义的摘要。
+- **外观与语言复用现有配置**：第三方工具行由同一个 `EnhancedExpandedTool` 组件渲染，界面语言（中/英/跟随 DSH）、「其它工具调用」的外壳/内部配色、浅色/深色/跟随外观、入场/输出动效与「过程折叠」全部照常生效；不新增设置项，也不新增 localStorage 键。
+- **额外可读目录设置（工作区外，高级）**：设置页新增目录清单（最多 12 个），用于历史回放/`str_replace_editor` 读取工作区外文件的“当前文件”补齐行号与全文对照。Host 新增 `GET/POST /dsh-inline-diff/api/read-roots`：清单持久化在 `~/.dsh/dsh-inline-diff/read-roots.json`（0600、临时文件 + rename 原子写），校验绝对路径/存在性/目录类型、拒绝文件系统根、去重、限制条数；错误回稳定 code。`/read` 在 workspaceRegistry 白名单之外，按这份用户显式授权清单放行目录内文本（仍受 2MB/15s/8 并发限制）。
+
+### 修复
+
+- **代码/行号字体未生效（P1）**：`styles.js` 曾把宿主的 `--dsw-font-markdown-code-block-small`（font 简写，含字号/行高/字族）当作 `font-family` 使用，计算值非法，代码与行号会回退成宿主正文字体。改为 DSH 主题文档化的 `--ds-font-family-code`（body）与 `--dsh-font-family-code-default`（:root 内置字体栈）兜底，Windows/macOS 都能拿到真正的等宽代码字体。
+- **纯 LF ↔ CRLF 改写显示为「0 变更」（P2）**：`model.js` 先按原始字符串判 nochange，纯换行符改写会判为不等，随后 diff 归一化后又是 0 增删，卡片显示一张“0 变更”的差异卡片。现在在物化预算内先按 `contentLines()` 同样的归一化逐行比较，命中时直接标为 `nochange`；真实内容改动不受影响。
+- **带路径前缀的反向代理**：客户端 Host API 以前硬编码根绝对路径 `/dsh-inline-diff/api/*`，部署在 `https://host/prefix/` 后请求会绕过前缀。新增 `resolveApiPath()` 按 `document.baseURI` 的目录部分解析（`/prefix/dsh-inline-diff/api/*`），根路径与桌面 `dsh-app://app/` 行为不变；解析失败回退旧路径。
+- **POSIX 安装超时只杀直接子进程**：`runPluginInstall()` 在 macOS/Linux 上用 `detached` 让 CLI 自成进程组，超时用 `process.kill(-pid, 'SIGKILL')` 整组清理（失败再退回单进程 kill）；Windows 仍用 `taskkill /T /F`。
+- **旧版 DSH 无 `slots.entries()` 时不再猜占用**：动态兜底控制器在缺少占用查询 API 时整体失效，只保留内建清单，避免覆盖官方富卡片；这是对 `engines.dsh` 下限（0.2.2-rc.1）的防御性回退。
+- **更新面板包名改为运行时读取**：Host 以前把 `@him666233/dsh-inline-diff` 写死在 registry 查询与安装命令里，用 `scripts/set-package-name.mjs` 改名后会继续查询/安装旧包；现在从本目录 `package.json` 读取包名（不可读时回退发布包名），改名脚本不再需要同步 Host 代码。
+- **路径围栏 `..` 前缀误判**：`inside()` 以前用 `child.startsWith('..')`，会把根下名为 `..notes.txt` 的合法文件判为越界；改为按路径段判断（`..` 或 `.. + sep`）。
+- **UTF-16 文本被误判二进制**：`/read` 以前见 NUL 就判 `binary`，记事本「Unicode」（UTF-16LE + BOM）文件无法展示；现在识别 UTF-8 / UTF-16 LE/BE BOM 后再判 NUL。
+- **减少动效下常驻呼吸动画未关闭**：入场/输出动画已受 `prefers-reduced-motion: no-preference` 保护，但状态点与 IN/OUT 色条的常驻脉冲仍在播放；新增 `prefers-reduced-motion: reduce` 覆盖，全部静态化。
+- **更新安装器健壮性**：CLI 路径增加存在性检查（不存在的 `lib/bin.js` 直接降级为手动命令）；Windows 超时只在 `child.pid` 有效时调用 `taskkill`；桌面端判定只匹配独立路径段，避免工作区路径误命中。
+- **Windows 克隆的换行**：新增 `.gitattributes` 强制文本文件 LF（`* text=auto` + 关键扩展名 `eol=lf`），避免 `core.autocrlf` 转换后 `build.mjs --check` 误报 `plugin/client.js` 过期。
+- **测试环境隔离**：`update install requires a known profile context` 测试临时清除 `DSH_PROFILE` / `DSH_HOME`，在 DSH 自己的终端里跑 `npm test` 不再因继承宿主环境而失败。
+- **macOS 测试夹具**：`tests/security.test.mjs` 的临时目录先做 `realpath()`，避免 macOS `TMPDIR=/var → /private/var` 符号链接导致 realpath 期望值不一致（Windows 无此问题）。
+- **CI 只有 ubuntu**：`.github/workflows/ci.yml` 改为 `ubuntu-latest` / `windows-latest` / `macos-latest` 三平台矩阵（`fail-fast: false`），覆盖 taskkill/SIGKILL、盘符/POSIX 路径、CRLF 归一化等平台分支。
+
+### 安全加固（1.4.1 安全复核）
+
+- **`/read` 任意根目录读取（HIGH）**：此前 `cwd` 完全由请求方给出，只要通过浏览器信任边界，同源第三方主题/插件就能把根设成盘符根或 `/`，读取宿主进程可读的任意小文件（≤2MB）。现在 Mount 了 DSH `workspaceRegistry` 的 profile 只允许读取**已注册 workspace 或其子目录**；registry 存在但读取/列表失败时 fail-closed 返回 403，卡片降级为差异块。registry 不存在的嵌入式/旧 profile 保持旧行为（见已知限制）。工作区外文件可通过设置页「额外可读目录」显式授权；清单由 Host 持久化、校验目录/拒绝文件系统根/最多 12 条，`/read` 只对授权目录内的文本放行。
+- **回退围栏的 DNS rebinding（MEDIUM）**：`isTrustedHostRequest()` 在回退路径中新增 TCP 对端校验——`Host` 写成 loopback 但 `socket.remoteAddress` 不是本机时拒绝；明确绑定非 loopback 地址的 LAN/远程 profile 仍按设计放行。
+- **复核确认的既有控制**：所有路由先过 `connection.admit`（无 connection 时回退 Host/Origin/跨站围栏）；`/read` 双层 realpath containment、符号链接/junction 围栏、2MB 上限、15s 超时、8 并发；POST 仅接受 JSON 且请求体 1MB/10s 上限；快照条数/单侧/总量三重预算；更新接口固定包名 + registry 版本白名单 + profile 名白名单 + argv 直传不经 shell + 240s 超时杀进程树；错误固定文案不回显路径/errno/堆栈；客户端无 `innerHTML` / `dangerouslySetInnerHTML` / `eval`。
+- **剩余风险（未改代码，文末说明）**：更新面板信任 npm registry 与发布账号（无签名校验）；同源 XSS 仍可调用展示 API 与「额外可读目录」设置 API（读取范围由用户授权清单决定，但 XSS 可自行添加目录）；无 workspaceRegistry 的嵌入式 profile 保留旧的调用方根行为。
+
+### 测试
+
+- 新增 `tests/tool-catalog.test.mjs`（6 项：内建清单跳过、占用让位、去重/上限、异常输入）与 `tests/dynamic-tool-views.test.mjs`（8 项：动态注册、后来占用时让位、禁用释放、清单失败降级、旧版 DSH 无 entries 时禁用、单 key 注册失败不中断、并发刷新合并、定时器清理）。
+- 新增 `tests/api-path.test.mjs`（6 项：根路径、反向代理前缀、`dsh-app://`、非法 base 回退、action 归一化）；`tests/model.test.mjs` 新增 2 项（LF/CRLF 改写判 nochange、真实改动不被吞）。
+- `tests/security.test.mjs` 新增 `/tools` 路由 4 项、`/read` 只读已注册 workspace 1 项、缺失 cwd/path 1 项、回退围栏非 loopback 对端 1 项、额外可读目录授权/拒绝与非法目录校验 2 项；`npm test` 共 **195 项**。
+
+### 兼容性
+
+- 在 DSH `0.2.2-rc.5`（Web profile）实测：插件加载、Host `/tools` 返回 `ssh_*` 等第三方工具名、`ssh_list` / `ssh_exec`（不存在的 alias，立即失败，未连接远程）行渲染为展开风格 IN/OUT、同一会话中的 Read 行保持官方原生视图、设置页「其它工具调用 = 展开风格」即时生效；另实测第三方工具行沿用 English 语言切换与「外壳浅色 / 内部深色」配置。`engines.dsh` 保持 `>=0.2.2-rc.1 <0.3.0`。
+- Windows 11（Node 24.22.1）实机：`npm run check` 与 195 项测试通过。macOS 无实机，本轮按代码级审计处理并修复了测试夹具（`realpath(tmpdir)`），CI 已配置 `windows-latest` / `macos-latest` 矩阵，推送后由 CI 实跑验证。桌面端 1.4.1 未重启复测，但第三方工具兼容与 Web 共用同一 `webServer` Host 路由、`tools` 服务与浏览器半侧代码路径。
+
+### 其他
+
+- 版本号升至 `1.4.1`（`package.json` / `package-lock.json` / `plugin/package.json` / `src/client/project.js` 四处一致）；`plugin/client.js`、`plugin/cordis.patch.yml` 重新构建。
+- 修正 README「项目结构」中缺失的 `updates.js` 行，补充 `tool-catalog.js` / `dynamic-tool-views.js`；中英文 README 与 `docs/publish.md` 的版本号与测试数量同步更新。
 
 ## [1.4.0] - 2026-11-12
 
@@ -311,6 +362,9 @@
 - Host 端捕获修改前后快照并提供同源读取 API。
 - 左右对照弹窗与全文对照视图。
 
+[1.4.1]: https://github.com/Him666233/dsh-inline-diff
+[1.4.0]: https://github.com/Him666233/dsh-inline-diff
+[1.3.0]: https://github.com/Him666233/dsh-inline-diff
 [1.2.6]: https://github.com/Him666233/dsh-inline-diff
 [1.2.5]: https://github.com/Him666233/dsh-inline-diff
 [1.2.4]: https://github.com/Him666233/dsh-inline-diff

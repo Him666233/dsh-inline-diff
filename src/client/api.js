@@ -4,6 +4,8 @@
  * 职责：用 fetch 调用 Host 半侧（plugin/index.js）注册的同源前缀路由：
  *   POST /dsh-inline-diff/api/snapshot  { sessionId, callId }  → 精确执行快照
  *   POST /dsh-inline-diff/api/read      { cwd, path }          → 工作区文件文本
+ *   GET  /dsh-inline-diff/api/tools                            → 可见工具名（第三方兼容）
+ *   GET/POST /dsh-inline-diff/api/read-roots                   → 额外可读目录清单
  * 并把响应收窄成展示层可用的形状；另带两个带预算的内存缓存，避免同一卡片因
  * 重渲染反复请求。
  *
@@ -29,6 +31,35 @@
  */
 export const API_PREFIX = '/dsh-inline-diff/api'
 
+/**
+ * 把 API 路径解析到当前文档的 base 路径下。
+ *
+ * 默认直接使用根绝对路径 `/dsh-inline-diff/api/...`；当 DSH 部署在带路径前缀的
+ * 反向代理后（例如 `https://host/dsh/`，代理会剥掉 `/dsh` 再转发），浏览器必须
+ * 请求 `/dsh/dsh-inline-diff/api/...`，否则根绝对路径会绕过前缀、落到代理根。
+ * 这里取 `document.baseURI` 的目录部分拼接；桌面端 `dsh-app://app/` 与普通
+ * http(s) origin 都适用，解析失败时回退根绝对路径（保持旧行为）。
+ *
+ * @param {string} action - 路由 action（如 `snapshot` / `tools`）。
+ * @param {string} [baseUri] - 覆盖文档 base（测试用）。
+ * @returns {string} 同源路径（仅 pathname，不含 origin/query）。
+ */
+export function resolveApiPath(action, baseUri = typeof document !== 'undefined' ? document.baseURI : undefined) {
+  const suffix = String(action ?? '').replace(/^\/+/, '')
+  const rootPath = `${API_PREFIX}/${suffix}`
+  if (typeof baseUri !== 'string' || baseUri === '') return rootPath
+  try {
+    const base = new URL(baseUri)
+    const dir = base.pathname.endsWith('/')
+      ? base.pathname
+      : base.pathname.slice(0, base.pathname.lastIndexOf('/') + 1)
+    return `${dir}${API_PREFIX.replace(/^\/+/, '')}/${suffix}`.replace(/\/{2,}/g, '/')
+  } catch {
+    // baseURI 不是合法 URL（老浏览器/测试环境）：回退根绝对路径。
+    return rootPath
+  }
+}
+
 /** 单个请求的硬超时：Host 卡住时宁可降级展示也不拖住会话渲染。 */
 const TIMEOUT_MS = 10_000
 
@@ -43,7 +74,7 @@ async function call(action, payload) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
   try {
-    const response = await fetch(`${API_PREFIX}/${action}`, {
+    const response = await fetch(resolveApiPath(action), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload ?? {}),
@@ -105,6 +136,99 @@ export async function fetchFileText(cwd, path) {
   if (data.kind === 'binary') return { kind: 'binary', size: data.size }
   if (data.kind === 'oversized') return { kind: 'oversized', size: data.size }
   return null
+}
+
+/**
+ * 读取 Host 当前可见的 wire 工具名（第三方工具兼容用）。
+ *
+ * 为什么由 Host 提供：浏览器半侧只能按工具名给 keyed `tool.call.toolview` 注册
+ * 视图，而 DSH 只内建了官方工具名；第三方插件（dsh-ssh、MCP 等）注册的工具名
+ * 客户端无从枚举。Host 的 `/tools` 只回名字，不含 schema、参数或结果。
+ *
+ * @returns {Promise<string[]|null>} 工具名数组；路由不存在/失败/超时返回 null
+ *   （调用方按“没有额外工具”降级，内建清单照常工作）。
+ */
+export async function fetchToolNames() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  try {
+    const response = await fetch(resolveApiPath('tools'), {
+      credentials: 'include',
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    })
+    if (!response.ok) return null
+    const data = await response.json()
+    if (data === null || typeof data !== 'object' || data.ok !== true || !Array.isArray(data.tools)) return null
+    const names = []
+    for (const name of data.tools) {
+      // Host 已做长度上限；客户端再收窄一次，避免把异常响应当作 slot key。
+      if (typeof name === 'string' && name !== '' && name.length <= 200) names.push(name)
+    }
+    return names
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 读取用户显式授权的工作区外可读目录清单（Host 持久化，不在 localStorage）。
+ *
+ * @returns {Promise<{roots: string[], max: number}|null>} 失败/超时返回 null。
+ */
+export async function fetchReadRoots() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  try {
+    const response = await fetch(resolveApiPath('read-roots'), {
+      credentials: 'include',
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    })
+    if (!response.ok) return null
+    const data = await response.json()
+    if (data === null || typeof data !== 'object' || data.ok !== true || !Array.isArray(data.roots)) return null
+    return {
+      roots: data.roots.filter(root => typeof root === 'string' && root !== ''),
+      max: Number.isInteger(data.max) && data.max > 0 ? data.max : 12,
+    }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 保存授权目录清单（整份替换）。Host 负责校验绝对路径/目录/根目录上限。
+ *
+ * @param {string[]} roots - 规范/待规范化的绝对目录列表。
+ * @returns {Promise<{ok:true, roots:string[]}|{ok:false, code:string}|null>} 网络失败 null。
+ */
+export async function saveReadRoots(roots) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15_000)
+  try {
+    const response = await fetch(resolveApiPath('read-roots'), {
+      method: 'POST',
+      credentials: 'include',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ roots: Array.isArray(roots) ? roots : [] }),
+    })
+    const data = await response.json().catch(() => null)
+    if (data === null || typeof data !== 'object') return null
+    if (data.ok === true && Array.isArray(data.roots)) {
+      return { ok: true, roots: data.roots.filter(root => typeof root === 'string' && root !== '') }
+    }
+    return { ok: false, code: typeof data.code === 'string' ? data.code : 'invalid-roots' }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /** 文件文本缓存：展示专用、短生命周期，按 (cwd,path) 键。 */
@@ -201,7 +325,7 @@ export async function fetchUpdateInfo(refresh) {
   const timer = setTimeout(() => controller.abort(), 25_000)
   try {
     const suffix = refresh === true ? '?refresh=1' : ''
-    const response = await fetch(`${API_PREFIX}/update/versions${suffix}`, {
+    const response = await fetch(`${resolveApiPath('update/versions')}${suffix}`, {
       credentials: 'include',
       signal: controller.signal,
       headers: { accept: 'application/json' },
@@ -227,7 +351,7 @@ export async function performUpdate(version) {
   // CLI 安装最坏情况会因 pnpm 重试拖到分钟级；Host 侧自身 240s 超时并强制返回。
   const timer = setTimeout(() => controller.abort(), 260_000)
   try {
-    const response = await fetch(`${API_PREFIX}/update/install`, {
+    const response = await fetch(resolveApiPath('update/install'), {
       method: 'POST',
       credentials: 'include',
       signal: controller.signal,

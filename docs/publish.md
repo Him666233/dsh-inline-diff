@@ -12,7 +12,7 @@ dsh plugin add @him666233/dsh-inline-diff
 2. **先**把源码提交到 GitHub，并创建 Release 上传 `release/` 下的两个 zip、`SHA256SUMS.txt`、`RELEASE_NOTES-<版本>.md`；
 3. GitHub 内容确认无误后，**再**执行 `cd plugin && npm publish`。npm 版本一旦发布不可撤回（只能 `npm deprecate`），所以顺序不能反。
 
-当前目标版本：**1.4.0**；npm 用户名已确定为 `him666233`，对应 scope `@him666233`。在收到明确发布指令前**不要**执行 `npm publish`。
+当前目标版本：**1.4.1**；npm 用户名已确定为 `him666233`，对应 scope `@him666233`。在收到明确发布指令前**不要**执行 `npm publish`。
 
 ## 一、DSH 插件的发布形态
 
@@ -65,7 +65,7 @@ node scripts/set-package-name.mjs @你的npm用户名/dsh-inline-diff
 npm install                  # 仅首次或依赖变化时需要
 node build.mjs               # 重新生成 plugin/client.js 与 plugin/cordis.patch.yml
 node build.mjs --check       # 校验已提交产物与源码、包名一致（CI 也跑这个）
-npm test                     # 164 项单元测试
+npm test                     # 195 项单元测试
 cd plugin
 npm pack --dry-run           # 确认发布文件清单
 ```
@@ -95,12 +95,12 @@ npm publish
 
 ## 五之二、打包 GitHub Release 发行版（npm 发布前完成）
 
-先确认版本号已更新（`plugin/package.json`、根 `package.json`、`src/client/project.js` 三处一致），并已写好 `release/RELEASE_NOTES-<版本>.md`（中文在上、英文在下），然后：
+先确认版本号已更新（`plugin/package.json`、根 `package.json`、`package-lock.json`、`src/client/project.js` 四处一致），并已写好 `release/RELEASE_NOTES-<版本>.md`（中文在上、英文在下），然后：
 
 ```bash
 node build.mjs            # 重建 plugin/client.js 与 plugin/cordis.patch.yml
 node build.mjs --check    # 产物与源码/包名一致
-npm test                  # 164 项全部通过
+npm test                  # 195 项全部通过
 node scripts/build-release.mjs
 ```
 
@@ -146,7 +146,7 @@ dsh plugin --profile __npm-probe add @him666233/dsh-inline-diff
 3. `cd plugin && npm publish`；
 4. 已发布版本不能重复使用；预发布可以用 `npm publish --tag next`，验证后再用 `npm publish --tag latest` 提升（或下次正式版覆盖 latest）。
 
-用户侧升级：`dsh plugin add @him666233/dsh-inline-diff@<新版本>`，或在插件页卸载后重装（插件管理器页面也提供第三方组合包的版本更新入口）。
+用户侧升级：`dsh plugin add @him666233/dsh-inline-diff@<新版本>`，或在插件页卸载后重装（当前 DSH 的插件管理器若提供版本更新入口，也可直接在那里升级）。
 
 ## 八、DSH 安装校验清单（发布前自查）
 

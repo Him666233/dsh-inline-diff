@@ -318,6 +318,32 @@ function exceedsAlignBudget(beforeText, afterText) {
     || exceedsMaterializationBudget([oldMetric, newMetric])
 }
 
+/**
+ * 纯换行符改写（LF ↔ CRLF）是否“内容没变”。
+ *
+ * diff 引擎按行比较时 `contentLines()` 会剥掉行尾 `\r`（并忽略最后一个换行），
+ * 因此 CRLF → LF / LF → CRLF 的改写最终渲染为 0 增删；如果卡片仍按原始字符串
+ * 判等，就会显示一张“0 变更”的差异卡片。这里用与 diff 完全相同的归一化后逐行
+ * 比较，在进入 diff 之前就把它标为 nochange。
+ *
+ * 只在物化预算内调用（避免为超大文本 split 出百万行数组）；预算外的纯换行改写
+ * 仍走“超大文件”降级路径，行为与 1.4.1 之前一致。
+ *
+ * @param {string} left
+ * @param {string} right
+ * @returns {boolean}
+ */
+function sameContentAfterEolNormalization(left, right) {
+  if (left === right) return true
+  const leftLines = contentLines(left)
+  const rightLines = contentLines(right)
+  if (leftLines.length !== rightLines.length) return false
+  for (let index = 0; index < leftLines.length; index += 1) {
+    if (leftLines[index] !== rightLines[index]) return false
+  }
+  return true
+}
+
 /* =========================================================================
  * 三、展示模型推导
  * ====================================================================== */
@@ -393,6 +419,11 @@ export function buildCardModel({ block, toolName, cwd, home, snapshot, fileText,
       const newMetric = measureTextBudget(after)
       const overMaterialization = exceedsMaterializationBudget([oldMetric, newMetric])
       if (before !== null && before === after) {
+        return { ...base, status: 'nochange', operation, source: 'snapshot', diff: diffText(before, after) }
+      }
+      // 纯 LF ↔ CRLF 改写：原始字符串不等，但按行归一化后完全一致。
+      // 先判 nochange，避免卡片显示成“0 变更”的差异卡片。
+      if (before !== null && !overMaterialization && sameContentAfterEolNormalization(before, after)) {
         return { ...base, status: 'nochange', operation, source: 'snapshot', diff: diffText(before, after) }
       }
       // 创建（before === null）同样可能命中物化预算：一个巨大的新建文件不能

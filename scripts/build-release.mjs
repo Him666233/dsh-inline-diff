@@ -168,7 +168,10 @@ function writeZip(target, entries) {
   const chunks = []
   const central = []
   let offset = 0
-  const now = new Date()
+  // 条目顺序由调用方排序保证稳定；时间戳默认取当前时间。设置
+  // SOURCE_DATE_EPOCH（秒）可让同一份源码在任意机器/时区生成完全相同的字节。
+  const sourceEpoch = Number(process.env.SOURCE_DATE_EPOCH)
+  const now = Number.isFinite(sourceEpoch) && sourceEpoch > 0 ? new Date(sourceEpoch * 1000) : new Date()
   const { time, day } = dosDateTime(now)
   for (const entry of entries) {
     const nameBytes = Buffer.from(entry.name, 'utf8')

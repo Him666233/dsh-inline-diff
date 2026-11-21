@@ -16,7 +16,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -86,6 +86,8 @@ function createHarness(options = {}) {
     get(name) {
       if (name === 'webServer') return ctx.webServer
       if (name === 'connection') return options.connection
+      if (name === 'tools') return options.tools
+      if (name === 'workspaceRegistry') return options.workspaceRegistry
       return undefined
     },
   }
@@ -98,6 +100,12 @@ function createHarness(options = {}) {
       const handler = listeners.get('tools/result')
       assert.equal(typeof handler, 'function', 'the plugin must listen to tools/result')
       handler(exec, result)
+    },
+    /** 触发 Host 的 tools/change 事件（工具注册表变化 → /tools 缓存失效）。 */
+    emitToolsChange() {
+      const handler = listeners.get('tools/change')
+      assert.equal(typeof handler, 'function', 'the plugin must listen to tools/change')
+      handler()
     },
     handler: route.handler,
   }
@@ -168,7 +176,10 @@ function postBody(url, payload, headers = {}) {
 // Shared temporary workspace
 // ---------------------------------------------------------------------------
 
-const sandbox = await mkdtemp(join(tmpdir(), 'dsh-inline-diff-security-'))
+// 先对 mkdtemp 结果做 realpath：macOS 的 TMPDIR 位于 /var，而 /var 是指向
+// /private/var 的符号链接；Host 的围栏返回 realpath 后的路径，夹具若不归一化，
+// 期望值（/var/...）与真实值（/private/var/...）会不一致（Windows 无此问题）。
+const sandbox = await realpath(await mkdtemp(join(tmpdir(), 'dsh-inline-diff-security-')))
 const workspace = join(sandbox, 'workspace')
 await mkdir(workspace, { recursive: true })
 await writeFile(join(workspace, 'hello.txt'), 'first\nsecond\n', 'utf8')
@@ -226,6 +237,19 @@ test('fallback fence rejects missing / foreign / smuggled Host headers', () => {
   // A directly configured non-loopback bind address is accepted (remote profiles).
   assert.equal(isTrustedHostRequest({ headers: { host: '192.168.1.5:64348' } }, '192.168.1.5'), true)
   assert.equal(isTrustedHostRequest({ headers: { host: '192.168.1.5:64348' } }, '127.0.0.1'), false)
+})
+
+test('fallback fence rejects a loopback Host reached from a non-loopback peer', () => {
+  // DNS rebinding：攻击页面把 Host 写成 127.0.0.1，但 TCP 对端来自外网。
+  const loopbackHost = { headers: { host: LOOPBACK_HOST } }
+  assert.equal(isTrustedHostRequest({ ...loopbackHost, socket: { remoteAddress: '127.0.0.1' } }, '127.0.0.1'), true)
+  assert.equal(isTrustedHostRequest({ ...loopbackHost, socket: { remoteAddress: '::ffff:127.0.0.1' } }, '127.0.0.1'), true)
+  assert.equal(isTrustedHostRequest({ ...loopbackHost, socket: { remoteAddress: '203.0.113.9' } }, '127.0.0.1'), false)
+  // 明确绑定到非 loopback 地址时，远端访问仍按设计允许（LAN/远程 profile）。
+  assert.equal(isTrustedHostRequest({
+    headers: { host: '192.168.1.5:64348' },
+    socket: { remoteAddress: '203.0.113.9' },
+  }, '192.168.1.5'), true)
 })
 
 test('fallback fence rejects cross-site markers and cross-origin Origin', () => {
@@ -326,10 +350,24 @@ test('update install rejects malformed versions before touching the registry', a
 })
 
 test('update install requires a known profile context before spawning anything', async () => {
-  const harness = createHarness()
-  const response = await call(harness, postBody(`${API}/update/install`, { version: '1.4.0' }))
-  assert.equal(response.status, 400)
-  assert.equal(json(response).code, 'profile-unknown')
+  // 在 DSH 自己的终端/desktop 里跑 npm test 时，DSH_PROFILE / DSH_HOME 会被继承，
+  // 插件会（按设计）解析出 profile 上下文，测试就测不到“未知 profile”分支。
+  // 这里临时清掉这两个环境变量，保证测试在任何宿主环境下都是同一个断言。
+  const savedProfile = process.env.DSH_PROFILE
+  const savedHome = process.env.DSH_HOME
+  delete process.env.DSH_PROFILE
+  delete process.env.DSH_HOME
+  try {
+    const harness = createHarness()
+    const response = await call(harness, postBody(`${API}/update/install`, { version: '1.4.0' }))
+    assert.equal(response.status, 400)
+    assert.equal(json(response).code, 'profile-unknown')
+  } finally {
+    if (savedProfile === undefined) delete process.env.DSH_PROFILE
+    else process.env.DSH_PROFILE = savedProfile
+    if (savedHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = savedHome
+  }
 })
 
 test('update install only accepts application/json', async () => {
@@ -415,6 +453,8 @@ test('body cap refuses declared and streamed oversized bodies before buffering',
 test('inside() contains root children and refuses .. and absolute escapes', () => {
   assert.equal(inside(workspace, workspace), true)
   assert.equal(inside(workspace, join(workspace, 'a', 'b.txt')), true)
+  // 以 `..` 开头的合法文件名不能被当成越界（`..notes.txt` 是根下的普通文件）。
+  assert.equal(inside(workspace, join(workspace, '..notes.txt')), true)
   assert.equal(inside(workspace, join(workspace, '..')), false)
   assert.equal(inside(workspace, join(workspace, '..', 'outside.txt')), false)
   assert.equal(inside(workspace, outsidePath), false)
@@ -476,6 +516,13 @@ test('read route serves text, answers binary/oversized explicitly, and never lea
   assert.equal(binary.status, 200)
   assert.equal(json(binary).kind, 'binary')
 
+  // 记事本「Unicode」写出的 UTF-16LE + BOM 文本不应被 NUL 判成二进制。
+  await writeFile(join(workspace, 'utf16.txt'), Buffer.from('\ufefffirst\nsecond\n', 'utf16le'))
+  const utf16 = await call(harness, postBody(`${API}/read`, { cwd: workspace, path: 'utf16.txt' }))
+  assert.equal(utf16.status, 200)
+  assert.equal(json(utf16).kind, 'text')
+  assert.equal(json(utf16).text, 'first\nsecond\n')
+
   await writeFile(join(workspace, 'big.txt'), Buffer.alloc(LIMITS.read + 1, 0x61))
   const oversized = await call(harness, postBody(`${API}/read`, { cwd: workspace, path: 'big.txt' }))
   assert.equal(oversized.status, 200)
@@ -494,6 +541,125 @@ test('read route serves text, answers binary/oversized explicitly, and never lea
   const badType = await call(harness, postBody(`${API}/read`, { cwd: 42, path: 'hello.txt' }))
   assert.equal(badType.status, 400)
   assert.equal(json(badType).error, 'cwd is required')
+})
+
+test('read route only serves registered workspaces when the registry is mounted', async () => {
+  // 同源脚本不能把 cwd 设成任意根读取宿主任意文件：挂载 workspaceRegistry 时，
+  // 只允许用户真正打开过的工作区（含其子目录）。
+  const registered = createHarness({ workspaceRegistry: { list: () => [{ path: workspace }] } })
+  const allowed = await call(registered, postBody(`${API}/read`, { cwd: workspace, path: 'hello.txt' }))
+  assert.equal(allowed.status, 200)
+  assert.equal(json(allowed).kind, 'text')
+
+  const sub = join(workspace, 'sub')
+  await mkdir(sub, { recursive: true })
+  await writeFile(join(sub, 'inside.txt'), 'inside\n', 'utf8')
+  const subAllowed = await call(registered, postBody(`${API}/read`, { cwd: sub, path: 'inside.txt' }))
+  assert.equal(subAllowed.status, 200)
+  assert.equal(json(subAllowed).text, 'inside\n')
+
+  const outsideRoot = await call(registered, postBody(`${API}/read`, { cwd: sandbox, path: 'outside.txt' }))
+  assert.equal(outsideRoot.status, 403)
+  assert.equal(json(outsideRoot).error, 'workspace is not registered')
+
+  // registry 存在但故障：fail-closed，展示读取降级而不是放行。
+  const brokenRegistry = createHarness({ workspaceRegistry: { list() { throw new Error('registry down') } } })
+  const failed = await call(brokenRegistry, postBody(`${API}/read`, { cwd: workspace, path: 'hello.txt' }))
+  assert.equal(failed.status, 403)
+  assert.equal(json(failed).error, 'workspace is not registered')
+
+  // 没有 registry 的旧/嵌入式 profile：保持原有 realpath 围栏行为。
+  const legacy = createHarness()
+  const legacyAllowed = await call(legacy, postBody(`${API}/read`, { cwd: workspace, path: 'hello.txt' }))
+  assert.equal(legacyAllowed.status, 200)
+})
+
+test('read route rejects missing cwd/path explicitly', async () => {
+  const harness = createHarness()
+  const noCwd = await call(harness, postBody(`${API}/read`, { path: 'hello.txt' }))
+  assert.equal(noCwd.status, 400)
+  assert.equal(json(noCwd).error, 'cwd is required')
+  const noPath = await call(harness, postBody(`${API}/read`, { cwd: workspace }))
+  assert.equal(noPath.status, 400)
+  assert.equal(json(noPath).error, 'path is required')
+})
+
+test('read roots settings authorize extra directories for the read route', async () => {
+  const savedHome = process.env.DSH_HOME
+  process.env.DSH_HOME = join(sandbox, 'dsh-home')
+  try {
+    const extra = join(sandbox, 'extra')
+    await mkdir(extra, { recursive: true })
+    await writeFile(join(extra, 'outside.txt'), 'outside allowed\n', 'utf8')
+    const harness = createHarness({ workspaceRegistry: { list: () => [{ path: workspace }] } })
+
+    const empty = await call(harness, { method: 'GET', url: `${API}/read-roots` })
+    assert.equal(empty.status, 200)
+    assert.deepEqual(json(empty).roots, [])
+
+    // 未授权前：工作区外文件被拒绝。
+    const before = await call(harness, postBody(`${API}/read`, { cwd: workspace, path: join(extra, 'outside.txt') }))
+    assert.equal(before.status, 403)
+
+    const saved = await call(harness, postBody(`${API}/read-roots`, { roots: [extra] }))
+    assert.equal(saved.status, 200)
+    assert.equal(json(saved).ok, true)
+    assert.deepEqual(json(saved).roots, [extra])
+
+    // 授权后：即使 cwd 不是注册 workspace，路径落在授权目录内也允许。
+    const allowed = await call(harness, postBody(`${API}/read`, { cwd: workspace, path: join(extra, 'outside.txt') }))
+    assert.equal(allowed.status, 200)
+    assert.equal(json(allowed).text, 'outside allowed\n')
+    const outsideCwd = await call(harness, postBody(`${API}/read`, { cwd: sandbox, path: join(extra, 'outside.txt') }))
+    assert.equal(outsideCwd.status, 200)
+
+    // 授权目录之外仍然拒绝。
+    const denied = await call(harness, postBody(`${API}/read`, { cwd: workspace, path: join(sandbox, 'outside.txt') }))
+    assert.equal(denied.status, 403)
+
+    // 清空后恢复拒绝。
+    const cleared = await call(harness, postBody(`${API}/read-roots`, { roots: [] }))
+    assert.equal(cleared.status, 200)
+    assert.deepEqual(json(cleared).roots, [])
+    const after = await call(harness, postBody(`${API}/read`, { cwd: workspace, path: join(extra, 'outside.txt') }))
+    assert.equal(after.status, 403)
+  } finally {
+    if (savedHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = savedHome
+  }
+})
+
+test('read roots settings reject invalid paths, roots and oversized lists', async () => {
+  const savedHome = process.env.DSH_HOME
+  process.env.DSH_HOME = join(sandbox, 'dsh-home-invalid')
+  try {
+    const harness = createHarness({ workspaceRegistry: { list: () => [{ path: workspace }] } })
+    const cases = [
+      [{ roots: 'not-an-array' }, 'invalid-roots'],
+      [{ roots: ['relative/path'] }, 'root-not-absolute'],
+      [{ roots: [join(sandbox, 'does-not-exist')] }, 'root-not-readable'],
+      [{ roots: [join(workspace, 'hello.txt')] }, 'root-not-directory'],
+      [{ roots: [process.platform === 'win32' ? 'C:\\' : '/'] }, 'filesystem-root'],
+      [{ roots: Array.from({ length: 13 }, (_, index) => join(sandbox, `root-${index}`)) }, 'too-many-roots'],
+    ]
+    for (const [payload, code] of cases) {
+      const response = await call(harness, postBody(`${API}/read-roots`, payload))
+      assert.equal(response.status, 400, JSON.stringify(payload))
+      assert.equal(json(response).ok, false)
+      assert.equal(json(response).code, code)
+    }
+    // POST 同样只接受 application/json（与其它写接口一致）。
+    const textPlain = await call(harness, {
+      method: 'POST',
+      url: `${API}/read-roots`,
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ roots: [] }),
+    })
+    assert.equal(textPlain.status, 415)
+  } finally {
+    if (savedHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = savedHome
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -835,4 +1001,73 @@ test('the registered route stays a same-origin prefix handler with no redirect',
   assert.equal(harness.route.path, API)
   assert.equal(typeof harness.route.handler, 'function')
   assert.equal(Object.hasOwn(harness.route, 'resource'), false)
+})
+
+// ---------------------------------------------------------------------------
+// 8. Third-party tool catalog (/tools)
+// ---------------------------------------------------------------------------
+
+test('GET /tools lists visible host tool names for third-party tool views', async () => {
+  let calls = 0
+  const tools = {
+    definitions() {
+      calls += 1
+      return [
+        { name: 'read' },
+        { name: 'ssh_exec' },
+        { name: 'ssh_list' },
+        { name: 'ssh_exec' },
+        { name: '' },
+        { name: 'x'.repeat(201) },
+        {},
+        null,
+      ]
+    },
+  }
+  const harness = createHarness({ tools })
+  const first = await call(harness, { method: 'GET', url: `${API}/tools` })
+  assert.equal(first.status, 200)
+  assert.deepEqual(json(first), { ok: true, tools: ['read', 'ssh_exec', 'ssh_list'] })
+
+  // 第二次请求命中 Host 缓存：不再调用 tools 服务。
+  const second = await call(harness, { method: 'GET', url: `${API}/tools` })
+  assert.deepEqual(json(second).tools, ['read', 'ssh_exec', 'ssh_list'])
+  assert.equal(calls, 1)
+
+  // tools/change 失效缓存：插件注册/卸载工具后下一轮能看到新名字。
+  harness.emitToolsChange()
+  await call(harness, { method: 'GET', url: `${API}/tools` })
+  assert.equal(calls, 2)
+})
+
+test('GET /tools stays behind the browser trust boundary', async () => {
+  let calls = 0
+  const harness = createHarness({
+    tools: { definitions() { calls += 1; return [{ name: 'ssh_exec' }] } },
+    connection: { admit: () => ({ rejection: 401 }) },
+  })
+  const res = await call(harness, { method: 'GET', url: `${API}/tools` })
+  assert.equal(res.status, 401)
+  assert.deepEqual(json(res), { ok: false, error: 'unauthorized' })
+  assert.equal(calls, 0, 'a rejected request must not touch the tools service')
+})
+
+test('GET /tools degrades to an empty list without a tools service or on failure', async () => {
+  const bare = createHarness()
+  const none = await call(bare, { method: 'GET', url: `${API}/tools` })
+  assert.equal(none.status, 200)
+  assert.deepEqual(json(none), { ok: true, tools: [] })
+
+  const broken = createHarness({ tools: { definitions() { throw new Error('drifted api') } } })
+  const failed = await call(broken, { method: 'GET', url: `${API}/tools` })
+  assert.equal(failed.status, 200)
+  assert.deepEqual(json(failed), { ok: true, tools: [] })
+})
+
+test('POST /tools is rejected as an unknown action without reading the tools service', async () => {
+  let calls = 0
+  const harness = createHarness({ tools: { definitions() { calls += 1; return [{ name: 'ssh_exec' }] } } })
+  const res = await call(harness, postBody(`${API}/tools`, {}))
+  assert.equal(res.status, 404)
+  assert.equal(calls, 0)
 })

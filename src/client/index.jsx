@@ -26,6 +26,7 @@
  *     的 slot 声明冲突导致 apply 中断。
  */
 import { createElement, useSyncExternalStore } from 'react'
+import { fetchToolNames } from './api.js'
 import { EnhancedShellCard } from './enhanced-shell.jsx'
 import {
   ENHANCED_DETAILS_KEYS,
@@ -49,6 +50,7 @@ import { MUTATION_TOOLS } from './model.js'
 import { getSettings, initSettings, startAppearanceTracking, subscribeSettings } from './settings.js'
 import { CSS } from './styles.js'
 import { SYNTAX_CSS } from './syntax-styles.js'
+import { createDynamicToolViews } from './dynamic-tool-views.js'
 import { startReadRangeChips } from './read-range-dom.js'
 import { VERSION } from './project.js'
 import { SettingsLauncher, SettingsModal, SettingsSection } from './settings-ui.jsx'
@@ -79,6 +81,18 @@ export const inject = ['slots', 'locale', 'configForms']
 const INLINE_DIFF_KEYS = MUTATION_TOOLS
 /** 被增强平铺命令行接管的工具名（唯一来源：enhanced-tools.jsx 的 SHELL_KEYS）。 */
 const ENHANCED_SHELL_KEYS = SHELL_KEYS
+/**
+ * 本插件按设置接管的全部工具名（唯一来源：三份内建清单 + MUTATION_TOOLS）。
+ * 动态第三方工具清单里要跳过这些 key，避免同一 key 注册两份视图；也用来防止
+ * “官方已有富结果卡片”的 key 被兜底视图盖掉（动态注册前还会再查一次槽位占用）。
+ */
+const KNOWN_TOOL_KEYS = new Set([
+  ...INLINE_DIFF_KEYS,
+  ...ENHANCED_SHELL_KEYS,
+  ...ENHANCED_DETAILS_KEYS,
+  ...ENHANCED_GENERIC_KEYS,
+  ...ENHANCED_SEARCH_WEB_KEYS,
+])
 /**
  * keyed `tool.call.toolview` 注册的优先级。
  *
@@ -141,12 +155,15 @@ export function apply(ctx) {
   // 工具行接管跟随持久化的显示选项。重新注册前先 dispose 旧集合，让官方 DSH
   // 行先回归，再按新设置注册（避免残留上一组视图）。
   ctx.slots.inject('tool.call.toolview', () => {
-    let disposers = []
+    /** 按设置接管的已知工具视图：key → disposer。 */
+    const knownViews = new Map()
     let signature = ''
-    const clear = () => {
-      for (const dispose of disposers) dispose()
-      disposers = []
+
+    const clearKnown = () => {
+      for (const dispose of knownViews.values()) dispose()
+      knownViews.clear()
     }
+
     /**
      * 注册一个 keyed toolview，并把注册失败限制在单个 key 上。
      *
@@ -159,45 +176,80 @@ export function apply(ctx) {
      *
      * @param {string} key - 工具名（slot key）。
      * @param {Function} Component - 已用 withPluginI18n 包装的行组件。
+     * @returns {(() => void)|null} 注销函数；注册失败返回 null。
      */
-    const registerView = (key, Component) => {
+    const register = (key, Component) => {
       try {
-        disposers.push(ctx.slots.register({
+        return ctx.slots.register({
           name: 'tool.call.toolview',
           key,
           priority: VIEW_PRIORITY,
           locale: NS,
-        }, Component))
+        }, Component)
       } catch (error) {
         console.warn(`[dsh-inline-diff] cannot take over tool view "${key}"; the stock DSH row stays active`, error)
+        return null
       }
     }
+
+    /** 注册一个已知工具视图并记入 knownViews（供设置变化时统一释放）。 */
+    const registerKnown = (key, Component) => {
+      const dispose = register(key, Component)
+      if (dispose !== null) knownViews.set(key, dispose)
+    }
+
+    // 第三方工具兜底：Host `/tools` 清单 → 只为“没人注册视图”的工具名注册展开
+    // 风格行；让位于官方富卡片与第三方定制行（细节见 dynamic-tool-views.js）。
+    const dynamic = createDynamicToolViews({
+      slots: ctx.slots,
+      known: KNOWN_TOOL_KEYS,
+      isEnabled: () => getSettings().toolCalls === 'enhanced',
+      fetchNames: fetchToolNames,
+      register: key => register(key, PluginEnhancedExpandedTool),
+    })
+
     const sync = () => {
       const settings = getSettings()
       const next = `${settings.fileCards}|${settings.shellRows}|${settings.toolCalls}`
       if (next === signature) return
       signature = next
-      clear()
+      clearKnown()
       if (settings.fileCards === 'enhanced') {
-        for (const key of INLINE_DIFF_KEYS) registerView(key, PluginInlineDiffCard)
+        for (const key of INLINE_DIFF_KEYS) registerKnown(key, PluginInlineDiffCard)
       }
       if (settings.shellRows === 'enhanced') {
-        for (const key of ENHANCED_SHELL_KEYS) registerView(key, PluginEnhancedShellCard)
+        for (const key of ENHANCED_SHELL_KEYS) registerKnown(key, PluginEnhancedShellCard)
       }
       // 详情类工具自带 keyed 视图，也一并接管，让“其它工具调用”选项同样作用于
       // 例如“查询运行时”。搜索/网页工具原生是富卡片，同一选项也接管，避免同一段
       // 对话里平铺行与原生折叠卡片混用。
       if (settings.toolCalls === 'enhanced') {
         for (const key of [...ENHANCED_DETAILS_KEYS, ...ENHANCED_GENERIC_KEYS, ...ENHANCED_SEARCH_WEB_KEYS]) {
-          registerView(key, PluginEnhancedExpandedTool)
+          registerKnown(key, PluginEnhancedExpandedTool)
         }
       }
+      // 第三方工具（dsh-ssh 的 ssh_*、MCP 桥接工具等）没有内建 key：按 Host
+      // 提供的工具清单补齐；切回“DSH 原生”时由控制器释放全部动态视图。
+      dynamic.setEnabled(settings.toolCalls === 'enhanced')
     }
+
     const unsubscribe = subscribeSettings(sync)
+    const unsubscribeSlot = typeof ctx.slots.subscribe === 'function'
+      ? ctx.slots.subscribe('tool.call.toolview', () => dynamic.stepAside())
+      : () => {}
+    // 窗口重新获得焦点时补一次刷新：运行中新装/卸载的第三方工具不必等下一轮
+    // 30s 轮询。
+    const onFocus = typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+      ? () => { void dynamic.refresh() }
+      : null
+    if (onFocus !== null) window.addEventListener('focus', onFocus)
     sync()
     return () => {
       unsubscribe()
-      clear()
+      if (typeof unsubscribeSlot === 'function') unsubscribeSlot()
+      if (onFocus !== null) window.removeEventListener('focus', onFocus)
+      dynamic.dispose()
+      clearKnown()
     }
   })
 

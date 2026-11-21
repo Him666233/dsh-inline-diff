@@ -1585,6 +1585,209 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 var import_react7 = require("react");
 
+// src/client/api.js
+var API_PREFIX = "/dsh-inline-diff/api";
+function resolveApiPath(action, baseUri = typeof document !== "undefined" ? document.baseURI : void 0) {
+  const suffix = String(action ?? "").replace(/^\/+/, "");
+  const rootPath = `${API_PREFIX}/${suffix}`;
+  if (typeof baseUri !== "string" || baseUri === "") return rootPath;
+  try {
+    const base = new URL(baseUri);
+    const dir = base.pathname.endsWith("/") ? base.pathname : base.pathname.slice(0, base.pathname.lastIndexOf("/") + 1);
+    return `${dir}${API_PREFIX.replace(/^\/+/, "")}/${suffix}`.replace(/\/{2,}/g, "/");
+  } catch {
+    return rootPath;
+  }
+}
+var TIMEOUT_MS = 1e4;
+async function call(action, payload2) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(resolveApiPath(action), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload2 ?? {}),
+      signal: controller.signal
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data !== null && typeof data === "object" ? data : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function fetchSnapshot(sessionId, callId) {
+  if (typeof sessionId !== "string" || sessionId === "" || callId === void 0 || callId === null) return null;
+  const data = await call("snapshot", { sessionId, callId: String(callId) });
+  if (data === null || data.ok !== true) return null;
+  const snapshot = data.snapshot;
+  if (snapshot === null || typeof snapshot !== "object") return null;
+  if (typeof snapshot.after !== "string") return null;
+  return {
+    path: typeof snapshot.path === "string" ? snapshot.path : "",
+    before: typeof snapshot.before === "string" ? snapshot.before : null,
+    after: snapshot.after,
+    operation: typeof snapshot.operation === "string" ? snapshot.operation : snapshot.before === null ? "create" : "update"
+  };
+}
+async function fetchFileText(cwd, path) {
+  if (typeof cwd !== "string" || cwd === "" || typeof path !== "string" || path === "") return null;
+  const data = await call("read", { cwd, path });
+  if (data === null || data.ok !== true) return null;
+  if (data.kind === "text" && typeof data.text === "string") return { kind: "text", text: data.text, size: data.size };
+  if (data.kind === "binary") return { kind: "binary", size: data.size };
+  if (data.kind === "oversized") return { kind: "oversized", size: data.size };
+  return null;
+}
+async function fetchToolNames() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(resolveApiPath("tools"), {
+      credentials: "include",
+      signal: controller.signal,
+      headers: { accept: "application/json" }
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (data === null || typeof data !== "object" || data.ok !== true || !Array.isArray(data.tools)) return null;
+    const names = [];
+    for (const name of data.tools) {
+      if (typeof name === "string" && name !== "" && name.length <= 200) names.push(name);
+    }
+    return names;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function fetchReadRoots() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(resolveApiPath("read-roots"), {
+      credentials: "include",
+      signal: controller.signal,
+      headers: { accept: "application/json" }
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (data === null || typeof data !== "object" || data.ok !== true || !Array.isArray(data.roots)) return null;
+    return {
+      roots: data.roots.filter((root) => typeof root === "string" && root !== ""),
+      max: Number.isInteger(data.max) && data.max > 0 ? data.max : 12
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function saveReadRoots(roots) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15e3);
+  try {
+    const response = await fetch(resolveApiPath("read-roots"), {
+      method: "POST",
+      credentials: "include",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ roots: Array.isArray(roots) ? roots : [] })
+    });
+    const data = await response.json().catch(() => null);
+    if (data === null || typeof data !== "object") return null;
+    if (data.ok === true && Array.isArray(data.roots)) {
+      return { ok: true, roots: data.roots.filter((root) => typeof root === "string" && root !== "") };
+    }
+    return { ok: false, code: typeof data.code === "string" ? data.code : "invalid-roots" };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+var FILE_CACHE_LIMIT = 24;
+var FILE_CACHE_TTL = 15e3;
+var fileCache = /* @__PURE__ */ new Map();
+function trimCache(map, limit) {
+  while (map.size > limit) {
+    const oldest = map.keys().next().value;
+    if (oldest === void 0) break;
+    map.delete(oldest);
+  }
+}
+async function cachedFileText(cwd, path) {
+  const key = `${cwd ?? ""}\0${path ?? ""}`;
+  const now = Date.now();
+  const hit = fileCache.get(key);
+  if (hit !== void 0 && now - hit.at < FILE_CACHE_TTL) {
+    fileCache.delete(key);
+    fileCache.set(key, hit);
+    return hit.value;
+  }
+  const value = await fetchFileText(cwd, path);
+  fileCache.set(key, { value, at: now });
+  trimCache(fileCache, FILE_CACHE_LIMIT);
+  return value;
+}
+var SNAPSHOT_CACHE_LIMIT = 160;
+var snapshotCache = /* @__PURE__ */ new Map();
+async function cachedSnapshot(sessionId, callId) {
+  const key = `${sessionId ?? ""}\0${callId ?? ""}`;
+  if (snapshotCache.has(key)) return snapshotCache.get(key) ?? null;
+  let snapshot = await fetchSnapshot(sessionId, callId);
+  if (snapshot === null) {
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    snapshot = await fetchSnapshot(sessionId, callId);
+  }
+  snapshotCache.set(key, snapshot);
+  trimCache(snapshotCache, SNAPSHOT_CACHE_LIMIT);
+  return snapshot;
+}
+async function fetchUpdateInfo(refresh) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25e3);
+  try {
+    const suffix = refresh === true ? "?refresh=1" : "";
+    const response = await fetch(`${resolveApiPath("update/versions")}${suffix}`, {
+      credentials: "include",
+      signal: controller.signal,
+      headers: { accept: "application/json" }
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data !== null && typeof data === "object" && data.ok === true ? data : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function performUpdate(version) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 26e4);
+  try {
+    const response = await fetch(resolveApiPath("update/install"), {
+      method: "POST",
+      credentials: "include",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ version })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data !== null && typeof data === "object" ? data : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // src/client/enhanced-shell.jsx
 var import_react4 = require("react");
 
@@ -2479,6 +2682,16 @@ function exceedsAlignBudget(beforeText, afterText) {
   const newMetric = measureTextBudget(afterText);
   return oldMetric.lines > ALIGN_MAX_SIDE_LINES || newMetric.lines > ALIGN_MAX_SIDE_LINES || oldMetric.lines * newMetric.lines > ALIGN_MAX_CELLS || exceedsMaterializationBudget([oldMetric, newMetric]);
 }
+function sameContentAfterEolNormalization(left, right) {
+  if (left === right) return true;
+  const leftLines = contentLines(left);
+  const rightLines = contentLines(right);
+  if (leftLines.length !== rightLines.length) return false;
+  for (let index = 0; index < leftLines.length; index += 1) {
+    if (leftLines[index] !== rightLines[index]) return false;
+  }
+  return true;
+}
 function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loading }) {
   const call2 = deriveCall(block);
   const resolvedToolName = resolveToolName(call2, toolName);
@@ -2516,6 +2729,9 @@ function buildCardModel({ block, toolName, cwd, home, snapshot, fileText, loadin
       const newMetric = measureTextBudget(after);
       const overMaterialization = exceedsMaterializationBudget([oldMetric, newMetric]);
       if (before !== null && before === after) {
+        return { ...base, status: "nochange", operation, source: "snapshot", diff: diffText(before, after) };
+      }
+      if (before !== null && !overMaterialization && sameContentAfterEolNormalization(before, after)) {
         return { ...base, status: "nochange", operation, source: "snapshot", diff: diffText(before, after) };
       }
       if (overMaterialization || before !== null && exceedsAlignBudget(before, after)) {
@@ -3020,6 +3236,17 @@ var zh = {
   "settings.subagentNote": "子代理会话与主会话共用这套设置；差异快照按各自 Session 独立记录，互不影响。",
   "settings.dsmCurrent": "当前 DSH 对话记录模式：{mode}",
   "settings.reset": "恢复默认",
+  "settings.readRoots": "额外可读目录（工作区外）",
+  "settings.readRootsDesc": "历史回放或 str_replace_editor 需要读取“当前文件”补齐行号；工作区外文件默认只显示修改块。这里添加的目录允许本插件的只读展示 API 读取其中的文本文件（≤2MB）。",
+  "settings.readRootsNote": "目录保存在 Host（~/.dsh/dsh-inline-diff/read-roots.json），不会上传文件；只影响历史回放的当前文件读取。添加后同源脚本也能通过本插件读取该目录内的文本，请只添加可信目录。",
+  "settings.readRootsPlaceholder": "例如 D:\\projects\\shared 或 /Users/me/projects",
+  "settings.readRootsAdd": "添加目录",
+  "settings.readRootsRemove": "移除",
+  "settings.readRootsEmpty": "尚未添加任何目录",
+  "settings.readRootsBusy": "保存中…",
+  "settings.readRootsSaved": "已保存",
+  "settings.readRootsError": "保存失败（{code}）",
+  "settings.readRootsLimit": "最多 {max} 个目录",
   "update.title": "版本与更新",
   "update.current": "当前版本 v{version}",
   "update.latest": "最新",
@@ -3273,6 +3500,17 @@ var en = {
   "settings.subagentNote": "Subagent sessions use the same settings; diff snapshots are recorded per Session and never interfere.",
   "settings.dsmCurrent": "Current DSH transcript mode: {mode}",
   "settings.reset": "Reset to defaults",
+  "settings.readRoots": "Extra readable folders (outside workspace)",
+  "settings.readRootsDesc": "History replay or str_replace_editor reads the current file to fill in line numbers; files outside the workspace otherwise stop at changed hunks. Folders added here allow this plugin’s read-only display API to read text files (≤2 MB) inside them.",
+  "settings.readRootsNote": "The list is stored by the Host (~/.dsh/dsh-inline-diff/read-roots.json) and no files are uploaded; it only affects current-file reads for history replay. Same-origin scripts can also use this plugin to read those folders, so only add trusted directories.",
+  "settings.readRootsPlaceholder": "e.g. D:\\projects\\shared or /Users/me/projects",
+  "settings.readRootsAdd": "Add folder",
+  "settings.readRootsRemove": "Remove",
+  "settings.readRootsEmpty": "No folders added yet",
+  "settings.readRootsBusy": "Saving…",
+  "settings.readRootsSaved": "Saved",
+  "settings.readRootsError": "Save failed ({code})",
+  "settings.readRootsLimit": "At most {max} folders",
   "update.title": "Version & updates",
   "update.current": "Current version v{version}",
   "update.latest": "Latest",
@@ -3765,7 +4003,24 @@ function summaryOf(args, call2) {
   if (args === null || typeof args !== "object") return "";
   const specific = call2 === void 0 ? "" : searchSummary(call2);
   if (specific !== "") return specific;
-  const keys = ["description", "command", "file_path", "path", "url", "query", "queries", "prompt", "objective", "skill", "title", "name", "tool"];
+  const keys = [
+    "description",
+    "command",
+    "file_path",
+    "path",
+    "localPath",
+    "remotePath",
+    "url",
+    "query",
+    "queries",
+    "prompt",
+    "objective",
+    "skill",
+    "title",
+    "name",
+    "tool",
+    "alias"
+  ];
   for (const key of keys) {
     const value = args[key];
     if (Array.isArray(value)) {
@@ -4122,129 +4377,6 @@ function EnhancedShellCard(props) {
 // src/client/components.jsx
 var import_react5 = require("react");
 var import_react_dom = require("react-dom");
-
-// src/client/api.js
-var API_PREFIX = "/dsh-inline-diff/api";
-var TIMEOUT_MS = 1e4;
-async function call(action, payload2) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const response = await fetch(`${API_PREFIX}/${action}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload2 ?? {}),
-      signal: controller.signal
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data !== null && typeof data === "object" ? data : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-async function fetchSnapshot(sessionId, callId) {
-  if (typeof sessionId !== "string" || sessionId === "" || callId === void 0 || callId === null) return null;
-  const data = await call("snapshot", { sessionId, callId: String(callId) });
-  if (data === null || data.ok !== true) return null;
-  const snapshot = data.snapshot;
-  if (snapshot === null || typeof snapshot !== "object") return null;
-  if (typeof snapshot.after !== "string") return null;
-  return {
-    path: typeof snapshot.path === "string" ? snapshot.path : "",
-    before: typeof snapshot.before === "string" ? snapshot.before : null,
-    after: snapshot.after,
-    operation: typeof snapshot.operation === "string" ? snapshot.operation : snapshot.before === null ? "create" : "update"
-  };
-}
-async function fetchFileText(cwd, path) {
-  if (typeof cwd !== "string" || cwd === "" || typeof path !== "string" || path === "") return null;
-  const data = await call("read", { cwd, path });
-  if (data === null || data.ok !== true) return null;
-  if (data.kind === "text" && typeof data.text === "string") return { kind: "text", text: data.text, size: data.size };
-  if (data.kind === "binary") return { kind: "binary", size: data.size };
-  if (data.kind === "oversized") return { kind: "oversized", size: data.size };
-  return null;
-}
-var FILE_CACHE_LIMIT = 24;
-var FILE_CACHE_TTL = 15e3;
-var fileCache = /* @__PURE__ */ new Map();
-function trimCache(map, limit) {
-  while (map.size > limit) {
-    const oldest = map.keys().next().value;
-    if (oldest === void 0) break;
-    map.delete(oldest);
-  }
-}
-async function cachedFileText(cwd, path) {
-  const key = `${cwd ?? ""}\0${path ?? ""}`;
-  const now = Date.now();
-  const hit = fileCache.get(key);
-  if (hit !== void 0 && now - hit.at < FILE_CACHE_TTL) {
-    fileCache.delete(key);
-    fileCache.set(key, hit);
-    return hit.value;
-  }
-  const value = await fetchFileText(cwd, path);
-  fileCache.set(key, { value, at: now });
-  trimCache(fileCache, FILE_CACHE_LIMIT);
-  return value;
-}
-var SNAPSHOT_CACHE_LIMIT = 160;
-var snapshotCache = /* @__PURE__ */ new Map();
-async function cachedSnapshot(sessionId, callId) {
-  const key = `${sessionId ?? ""}\0${callId ?? ""}`;
-  if (snapshotCache.has(key)) return snapshotCache.get(key) ?? null;
-  let snapshot = await fetchSnapshot(sessionId, callId);
-  if (snapshot === null) {
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    snapshot = await fetchSnapshot(sessionId, callId);
-  }
-  snapshotCache.set(key, snapshot);
-  trimCache(snapshotCache, SNAPSHOT_CACHE_LIMIT);
-  return snapshot;
-}
-async function fetchUpdateInfo(refresh) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25e3);
-  try {
-    const suffix = refresh === true ? "?refresh=1" : "";
-    const response = await fetch(`${API_PREFIX}/update/versions${suffix}`, {
-      credentials: "include",
-      signal: controller.signal,
-      headers: { accept: "application/json" }
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data !== null && typeof data === "object" && data.ok === true ? data : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-async function performUpdate(version) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 26e4);
-  try {
-    const response = await fetch(`${API_PREFIX}/update/install`, {
-      method: "POST",
-      credentials: "include",
-      signal: controller.signal,
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ version })
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data !== null && typeof data === "object" ? data : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 // node_modules/highlight.js/es/core.js
 var import_core = __toESM(require_core(), 1);
@@ -23417,7 +23549,11 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
 }
 /* ---- 增强风格平铺命令执行行（bash / pwsh / win_bash） ---- */
 .enhanced-tool {
-  --enhanced-mono: var(--dsw-font-markdown-code-block-small, 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  /* 代码字体只取“字体族”token：--dsw-font-markdown-code-block-small 是 font 简写
+     （字号/行高/字族），直接当 font-family 用会得到非法值并回退宿主正文字体。
+     DSH 主题在 body 上提供 --ds-font-family-code，:root 上提供
+     --dsh-font-family-code-default 作为内置字体栈兜底。 */
+  --enhanced-mono: var(--ds-font-family-code, var(--dsh-font-family-code-default, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace));
   display: flex;
   flex-direction: column;
   /* 头部与 IO 面板之间不留 gap：IN 状态条必须直接顶到标题条，中间不能有空白带。
@@ -23816,7 +23952,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   .did-settings-scroll { padding: 12px 10px 14px 16px; }
 }
 .did-card {
-  --did-mono: var(--dsw-font-markdown-code-block-small, 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --did-mono: var(--ds-font-family-code, var(--dsh-font-family-code-default, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace));
   --did-inset-x: 9px;
   display: flex;
   flex-direction: column;
@@ -24095,7 +24231,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   padding: 0 5px;
   border: 0.5px solid currentColor;
   border-radius: 999px;
-  font-family: var(--dsh-content-font-family, system-ui, sans-serif);
+  font-family: var(--dsw-font-family, system-ui, sans-serif);
   font-size: 10px;
   line-height: 14px;
   white-space: nowrap;
@@ -24312,7 +24448,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   border: 0.5px solid var(--did-border-2);
   border-radius: 999px;
   color: var(--did-fg-tertiary);
-  font-family: var(--enhanced-mono, var(--dsw-font-markdown-code-block-small, ui-monospace, monospace));
+  font-family: var(--enhanced-mono, var(--ds-font-family-code, ui-monospace, monospace));
   font-size: 10.5px;
   line-height: 16px;
   white-space: nowrap;
@@ -24328,7 +24464,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   grid-template-columns: 2.7em minmax(0, 1fr) auto;
   min-width: 0;
   padding: 0 var(--did-inset-x) 0 14px;
-  font-family: var(--did-mono, 12px/18px ui-monospace, monospace);
+  font-family: var(--did-mono, var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace));
   font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px);
   line-height: 18px;
   border-left: 0.5px solid transparent;
@@ -25201,6 +25337,95 @@ body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] .did-zoom
   }
 }
 
+/* 常驻呼吸动画（状态点 / IN-OUT 色条）也遵循「减少动效」：只保留静态颜色，
+   不脉冲。入场/输出动画已由上面的 no-preference 媒体查询整体关闭。 */
+@media (prefers-reduced-motion: reduce) {
+  .enhanced-tool[data-state='running'] .enhanced-dot,
+  .enhanced-tool[data-state='preparing'] .enhanced-dot,
+  .enhanced-section[data-state='running'],
+  .enhanced-section[data-state='preparing'],
+  .did-state[data-state='running'] .did-dot,
+  .did-state[data-state='preparing'] .did-dot {
+    animation: none;
+  }
+}
+
+/* ---- 设置页：额外可读目录 ----------------------------------------------- */
+.did-readroots {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 0.5px solid var(--did-border-1);
+}
+.did-readroots-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.did-readroots-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0.5px solid var(--did-border-2);
+  border-radius: 8px;
+  background: var(--did-surface-2);
+  color: var(--did-fg-primary);
+  font-family: var(--ds-font-family-code, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+.did-readroots-input::placeholder { color: var(--did-fg-tertiary); }
+.did-readroots-input:focus-visible {
+  outline: 1px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+.did-readroots-button {
+  flex: none;
+  padding: 5px 10px;
+  border: 0.5px solid var(--did-border-2);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent);
+  color: var(--did-fg-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.did-readroots-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent);
+}
+.did-readroots-button:disabled { opacity: 0.5; cursor: default; }
+.did-readroots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+.did-readroots-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 0.5px solid var(--did-border-1);
+  border-radius: 6px;
+  background: var(--did-io-bg);
+}
+.did-readroots-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--did-fg-secondary);
+  font-family: var(--ds-font-family-code, ui-monospace, monospace);
+  font-size: 11px;
+}
+.did-readroots-empty {
+  padding: 2px 1px;
+  color: var(--did-fg-tertiary);
+  font-size: 11px;
+}
+.did-readroots-ok {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--dsw-alias-state-success-primary);
+}
+
 /* ---- 设置页：版本与更新面板 --------------------------------------------- */
 .did-update {
   margin-top: 14px;
@@ -25511,6 +25736,148 @@ ${EMPHASIS_RULES}
 ${BADGE_RULES}
 `;
 
+// src/client/tool-catalog.js
+var TOOL_CATALOG_REFRESH_MS = 3e4;
+var TOOL_NAME_LIMIT = 200;
+var TOOL_CATALOG_LIMIT = 500;
+function selectDynamicToolKeys(names, options = {}) {
+  const known = toSet(options.known);
+  const claimed = toSet(options.claimed);
+  const already = toSet(options.already);
+  const limit = Number.isFinite(options.limit) && options.limit > 0 ? Math.floor(options.limit) : TOOL_CATALOG_LIMIT;
+  const selected = [];
+  if (!Array.isArray(names)) return selected;
+  const seen = /* @__PURE__ */ new Set();
+  for (const name of names) {
+    if (typeof name !== "string" || name === "" || name.length > TOOL_NAME_LIMIT) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (known.has(name) || claimed.has(name) || already.has(name)) continue;
+    selected.push(name);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+function toSet(value) {
+  if (value instanceof Set) return value;
+  if (value === null || value === void 0) return /* @__PURE__ */ new Set();
+  try {
+    return new Set(value);
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
+
+// src/client/dynamic-tool-views.js
+function createDynamicToolViews(options) {
+  const { slots, known, isEnabled, fetchNames, register } = options;
+  const refreshMs = Number.isFinite(options.refreshMs) && options.refreshMs > 0 ? options.refreshMs : TOOL_CATALOG_REFRESH_MS;
+  const setTimeoutFn = typeof options.setTimeoutFn === "function" ? options.setTimeoutFn : setTimeout;
+  const clearTimeoutFn = typeof options.clearTimeoutFn === "function" ? options.clearTimeoutFn : clearTimeout;
+  const knownSet = known instanceof Set ? known : new Set(known ?? []);
+  const canInspectOccupancy = typeof slots?.entries === "function";
+  const views = /* @__PURE__ */ new Map();
+  let disposed = false;
+  let refreshing = false;
+  let timer = null;
+  let enabled = false;
+  const entryCount = (key) => {
+    try {
+      const entries = typeof slots?.entries === "function" ? slots.entries("tool.call.toolview") : [];
+      if (!Array.isArray(entries)) return 0;
+      let count = 0;
+      for (const entry of entries) if (entry?.options?.key === key) count += 1;
+      return count;
+    } catch {
+      return 0;
+    }
+  };
+  const release = (key) => {
+    const dispose2 = views.get(key);
+    if (dispose2 === void 0) return;
+    views.delete(key);
+    try {
+      dispose2();
+    } catch (error) {
+      console.warn(`[dsh-inline-diff] failed to release dynamic tool view "${key}"`, error);
+    }
+  };
+  const clear = () => {
+    for (const key of [...views.keys()]) release(key);
+  };
+  const clearTimer = () => {
+    if (timer === null) return;
+    clearTimeoutFn(timer);
+    timer = null;
+  };
+  const schedule = () => {
+    if (disposed || !enabled) {
+      clearTimer();
+      return;
+    }
+    clearTimer();
+    timer = setTimeoutFn(() => {
+      timer = null;
+      void refresh();
+    }, refreshMs);
+  };
+  async function refresh() {
+    if (disposed || refreshing || !enabled) return;
+    if (!canInspectOccupancy) return;
+    refreshing = true;
+    try {
+      const names = await fetchNames();
+      if (disposed || !enabled) return;
+      if (!Array.isArray(names)) return;
+      const claimed = /* @__PURE__ */ new Set();
+      for (const name of names) {
+        if (knownSet.has(name) || views.has(name)) continue;
+        if (entryCount(name) > 0) claimed.add(name);
+      }
+      const selected = selectDynamicToolKeys(names, { known: knownSet, claimed, already: views.keys() });
+      for (const key of selected) {
+        if (disposed || !enabled) return;
+        if (entryCount(key) > 0) continue;
+        const dispose2 = register(key);
+        if (typeof dispose2 === "function") views.set(key, dispose2);
+      }
+    } catch (error) {
+      console.warn("[dsh-inline-diff] cannot refresh third-party tool views", error);
+    } finally {
+      refreshing = false;
+      schedule();
+    }
+  }
+  function stepAside() {
+    if (disposed) return;
+    for (const key of [...views.keys()]) {
+      if (entryCount(key) > 1) release(key);
+    }
+  }
+  function setEnabled(next) {
+    if (disposed) return void 0;
+    enabled = next === true;
+    if (!enabled) {
+      clearTimer();
+      clear();
+      return void 0;
+    }
+    const pending = refresh();
+    schedule();
+    return pending;
+  }
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    clearTimer();
+    clear();
+  }
+  function keys() {
+    return [...views.keys()];
+  }
+  return { refresh, stepAside, setEnabled, dispose, keys };
+}
+
 // src/client/read-range.js
 function compressLineRanges(numbers) {
   const ranges = [];
@@ -25702,7 +26069,7 @@ function startReadRangeChips(t) {
 }
 
 // src/client/project.js
-var VERSION = "1.4.0";
+var VERSION = "1.4.1";
 var AUTHOR = "Him666233";
 var AUTHOR_URL = "https://github.com/Him666233";
 var REPO_URL = "https://github.com/Him666233/dsh-inline-diff";
@@ -26244,6 +26611,7 @@ function SettingsPanel({ t, onClose }) {
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-note", children: t("settings.subagentNote") }),
       dsmMode !== void 0 && settings.transcript === "enhanced" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-note", children: t("settings.dsmCurrent", { mode: dsmMode }) }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(FxSettings, { t, settings, onChange: patchSurfaceEffect }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(ReadRootsSection, { t }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(UpdateSection, { t }),
       error !== "" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-error", children: error }) : null
     ] }),
@@ -26280,6 +26648,107 @@ function SettingsLauncher({ wide, t }) {
       ]
     }
   );
+}
+function ReadRootsSection({ t }) {
+  const [roots, setRoots] = (0, import_react6.useState)([]);
+  const [max, setMax] = (0, import_react6.useState)(12);
+  const [loaded, setLoaded] = (0, import_react6.useState)(false);
+  const [draft, setDraft] = (0, import_react6.useState)("");
+  const [busy, setBusy] = (0, import_react6.useState)(false);
+  const [feedback, setFeedback] = (0, import_react6.useState)(null);
+  (0, import_react6.useEffect)(() => {
+    let alive = true;
+    fetchReadRoots().then((result) => {
+      if (!alive) return;
+      if (result !== null) {
+        setRoots(result.roots);
+        setMax(result.max);
+      }
+      setLoaded(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const save = async (next) => {
+    if (busy) return;
+    setBusy(true);
+    setFeedback(null);
+    const result = await saveReadRoots(next);
+    setBusy(false);
+    if (result === null) {
+      setFeedback({ kind: "error", code: "network" });
+      return;
+    }
+    if (result.ok !== true) {
+      setFeedback({ kind: "error", code: result.code });
+      return;
+    }
+    setRoots(result.roots);
+    setFeedback({ kind: "ok" });
+  };
+  const add = () => {
+    const value = draft.trim();
+    if (value === "" || busy) return;
+    setDraft("");
+    void save([...roots, value]);
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-readroots", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-setting-label", children: t("settings.readRoots") }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-setting-desc", children: t("settings.readRootsDesc") }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-readroots-row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        "input",
+        {
+          className: "did-readroots-input",
+          type: "text",
+          value: draft,
+          placeholder: t("settings.readRootsPlaceholder"),
+          "aria-label": t("settings.readRootsPlaceholder"),
+          disabled: busy || !loaded,
+          spellCheck: false,
+          onChange: (event) => setDraft(event.target.value),
+          onKeyDown: (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            add();
+          }
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "did-readroots-button",
+          disabled: busy || !loaded || draft.trim() === "",
+          onClick: add,
+          children: busy ? t("settings.readRootsBusy") : t("settings.readRootsAdd")
+        }
+      )
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-readroots-list", children: roots.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-readroots-empty", children: t("settings.readRootsEmpty") }) : roots.map((root) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-readroots-item", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "did-readroots-path", title: root, children: root }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "did-readroots-button",
+          disabled: busy,
+          onClick: () => {
+            void save(roots.filter((item) => item !== root));
+          },
+          children: t("settings.readRootsRemove")
+        }
+      )
+    ] }, root)) }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "did-settings-note", children: [
+      t("settings.readRootsLimit", { max }),
+      " · ",
+      t("settings.readRootsNote")
+    ] }),
+    feedback?.kind === "ok" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-readroots-ok", children: t("settings.readRootsSaved") }) : null,
+    feedback?.kind === "error" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "did-settings-error", children: t("settings.readRootsError", { code: feedback.code ?? "unknown" }) }) : null
+  ] });
 }
 function UpdateSection({ t }) {
   const [info, setInfo] = (0, import_react6.useState)(null);
@@ -26462,6 +26931,13 @@ var PluginSettingsLauncher = withPluginI18n(SettingsLauncher);
 var inject = ["slots", "locale", "configForms"];
 var INLINE_DIFF_KEYS = MUTATION_TOOLS;
 var ENHANCED_SHELL_KEYS = SHELL_KEYS;
+var KNOWN_TOOL_KEYS = /* @__PURE__ */ new Set([
+  ...INLINE_DIFF_KEYS,
+  ...ENHANCED_SHELL_KEYS,
+  ...ENHANCED_DETAILS_KEYS,
+  ...ENHANCED_GENERIC_KEYS,
+  ...ENHANCED_SEARCH_WEB_KEYS
+]);
 var VIEW_PRIORITY = -100;
 function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, dicts), "dsh-inline-diff: dictionaries");
@@ -26495,47 +26971,69 @@ function apply(ctx) {
     };
   }, "dsh-inline-diff: appearance");
   ctx.slots.inject("tool.call.toolview", () => {
-    let disposers = [];
+    const knownViews = /* @__PURE__ */ new Map();
     let signature = "";
-    const clear = () => {
-      for (const dispose of disposers) dispose();
-      disposers = [];
+    const clearKnown = () => {
+      for (const dispose of knownViews.values()) dispose();
+      knownViews.clear();
     };
-    const registerView = (key, Component) => {
+    const register = (key, Component) => {
       try {
-        disposers.push(ctx.slots.register({
+        return ctx.slots.register({
           name: "tool.call.toolview",
           key,
           priority: VIEW_PRIORITY,
           locale: NS
-        }, Component));
+        }, Component);
       } catch (error) {
         console.warn(`[dsh-inline-diff] cannot take over tool view "${key}"; the stock DSH row stays active`, error);
+        return null;
       }
     };
+    const registerKnown = (key, Component) => {
+      const dispose = register(key, Component);
+      if (dispose !== null) knownViews.set(key, dispose);
+    };
+    const dynamic = createDynamicToolViews({
+      slots: ctx.slots,
+      known: KNOWN_TOOL_KEYS,
+      isEnabled: () => getSettings().toolCalls === "enhanced",
+      fetchNames: fetchToolNames,
+      register: (key) => register(key, PluginEnhancedExpandedTool)
+    });
     const sync = () => {
       const settings = getSettings();
       const next = `${settings.fileCards}|${settings.shellRows}|${settings.toolCalls}`;
       if (next === signature) return;
       signature = next;
-      clear();
+      clearKnown();
       if (settings.fileCards === "enhanced") {
-        for (const key of INLINE_DIFF_KEYS) registerView(key, PluginInlineDiffCard);
+        for (const key of INLINE_DIFF_KEYS) registerKnown(key, PluginInlineDiffCard);
       }
       if (settings.shellRows === "enhanced") {
-        for (const key of ENHANCED_SHELL_KEYS) registerView(key, PluginEnhancedShellCard);
+        for (const key of ENHANCED_SHELL_KEYS) registerKnown(key, PluginEnhancedShellCard);
       }
       if (settings.toolCalls === "enhanced") {
         for (const key of [...ENHANCED_DETAILS_KEYS, ...ENHANCED_GENERIC_KEYS, ...ENHANCED_SEARCH_WEB_KEYS]) {
-          registerView(key, PluginEnhancedExpandedTool);
+          registerKnown(key, PluginEnhancedExpandedTool);
         }
       }
+      dynamic.setEnabled(settings.toolCalls === "enhanced");
     };
     const unsubscribe = subscribeSettings(sync);
+    const unsubscribeSlot = typeof ctx.slots.subscribe === "function" ? ctx.slots.subscribe("tool.call.toolview", () => dynamic.stepAside()) : () => {
+    };
+    const onFocus = typeof window !== "undefined" && typeof window.addEventListener === "function" ? () => {
+      void dynamic.refresh();
+    } : null;
+    if (onFocus !== null) window.addEventListener("focus", onFocus);
     sync();
     return () => {
       unsubscribe();
-      clear();
+      if (typeof unsubscribeSlot === "function") unsubscribeSlot();
+      if (onFocus !== null) window.removeEventListener("focus", onFocus);
+      dynamic.dispose();
+      clearKnown();
     };
   });
   ctx.slots.inject("shell.overlay", function* () {

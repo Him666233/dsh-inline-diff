@@ -17,6 +17,7 @@
  *        POST /dsh-inline-diff/api/read      { cwd, path }
  *        GET  /dsh-inline-diff/api/update/versions  版本列表/当前版本/安装方式
  *        POST /dsh-inline-diff/api/update/install   { version } 安装/回退
+ *        GET  /dsh-inline-diff/api/tools            当前可见工具名（第三方工具兼容）
  *        GET  /dsh-inline-diff/api/ping
  *
  *      读取路由永远不离开会话工作区（请求路径与解析后路径都做 realpath 包含
@@ -51,9 +52,10 @@
  *     调用本身；快照缺失时历史回放会自动回退到文件读取/差异块。
  */
 import { spawn } from 'node:child_process'
-import { readFile, realpath, stat } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
+import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** webServer 服务承载本插件的前缀路由（通过 inject 注入）。 */
@@ -63,6 +65,12 @@ export const inject = ['webServer']
 const API_PREFIX = '/dsh-inline-diff/api'
 /** 展示读取上限：更大的文件返回 `oversized`，浏览器降级为差异块视图。 */
 const READ_CAP = 2 * 1024 * 1024
+/** 用户显式授权的工作区外可读目录上限（设置页维护）。 */
+const READ_ROOTS_MAX = 12
+/** 单个授权目录路径长度上限。 */
+const READ_ROOTS_PATH_MAX = 4096
+/** 授权目录清单文件的缓存时间（设置页写入后会主动刷新）。 */
+const READ_ROOTS_CACHE_TTL_MS = 5_000
 /** 请求体大小上限。 */
 const BODY_CAP = 1024 * 1024
 /** 所有会话合计保留的快照条目数（有界内存 LRU）。 */
@@ -85,6 +93,10 @@ const READ_TIMEOUT_MS = 15_000
 const MAX_CONCURRENT_READS = 8
 /** 快照 key 来自客户端；限制长度让 key 保持小而可比较。 */
 const MAX_ID_LENGTH = 512
+/** 工具名上限：Host 注册表的 wire name 不会这么长，超过的一律丢弃。 */
+const MAX_TOOL_NAME_LENGTH = 200
+/** 单次 `/tools` 应答最多列出的工具数（MCP 等可能一次暴露很多工具）。 */
+const MAX_TOOL_NAMES = 500
 
 /**
  * 只读边界常量。导出仅供 `tests/security.test.mjs` 断言真实生产值（避免测试里
@@ -100,6 +112,8 @@ export const LIMITS = Object.freeze({
   readTimeoutMs: READ_TIMEOUT_MS,
   maxConcurrentReads: MAX_CONCURRENT_READS,
   maxIdLength: MAX_ID_LENGTH,
+  maxToolNameLength: MAX_TOOL_NAME_LENGTH,
+  maxToolNames: MAX_TOOL_NAMES,
 })
 
 /** 一个带类型的请求失败：`status` 是应答用的 HTTP 状态码。 */
@@ -107,11 +121,13 @@ class RequestError extends Error {
   /**
    * @param {number} status
    * @param {string} message - 稳定、不敏感的客户端可读消息（不回显 fs 细节）
+   * @param {string} [code] - 稳定错误码（设置页等需要按码显示文案时使用）
    */
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message)
     this.name = 'RequestError'
     this.status = status
+    if (typeof code === 'string') this.code = code
   }
 }
 
@@ -196,7 +212,22 @@ export function clearSnapshots() {
 /** 判断候选路径是根本身还是位于根之下（不允许 `..` 逃逸，`relative` 为空表示根）。 */
 export function inside(root, candidate) {
   const child = relative(root, candidate)
-  return child === '' || (!child.startsWith('..') && !isAbsolute(child))
+  // 不能只用 startsWith('..')：根下名为 `..notes.txt` 的合法文件也会以 `..`
+  // 开头，必须按路径段判断。
+  return child === '' || (!isAbsolute(child) && child !== '..' && !child.startsWith('..' + sep))
+}
+
+/** Windows 与默认 APFS 大小写不敏感；路径比较按平台归一，避免误拒。 */
+function foldPathForPlatform(value) {
+  return process.platform === 'win32' || process.platform === 'darwin' ? value.toLowerCase() : value
+}
+
+/** target 是否等于 root 或位于 root 之下（两者都应是规范绝对路径）。 */
+function isSameOrInside(root, target) {
+  const rootKey = foldPathForPlatform(root)
+  const targetKey = foldPathForPlatform(target)
+  if (targetKey === rootKey) return true
+  return targetKey.startsWith(rootKey.endsWith(sep) ? rootKey : rootKey + sep)
 }
 
 /**
@@ -204,16 +235,24 @@ export function inside(root, candidate) {
  * → 结果再包含校验。符号链接只有目标仍在根内才放行（指向工作区外的链接或
  * Windows junction 读不到根外内容）。
  *
+ * `extraRoots` 是用户显式授权的额外可读目录（设置页维护）：候选路径或 realpath
+ * 之后的目标只要落在其中任一目录下也放行。这样工作区外文件的历史回放/全文对照
+ * 可以按用户授权读取，而不是放开任意根。
+ *
  * 失败一律抛带状态码的 RequestError，且消息固定：绝不把原始 fs 错误
  * （含用户请求的绝对路径与 errno）回给调用方。
  *
+ * @param {string} cwd - 会话工作区根。
+ * @param {string} requestedPath - 请求路径（绝对或相对 cwd）。
+ * @param {string[]} [extraRoots] - 已规范化的额外可读目录。
  * @returns {Promise<{ filename: string, size: number }>} 解析后的真实文件名与大小。
  */
-export async function resolveReadTarget(cwd, requestedPath) {
+export async function resolveReadTarget(cwd, requestedPath, extraRoots = []) {
   if (typeof cwd !== 'string' || cwd === '') throw new RequestError(400, 'cwd is required')
   if (typeof requestedPath !== 'string' || requestedPath === '') throw new RequestError(400, 'path is required')
   // NUL 会截断底层系统调用，属于非法路径而不是普通“不存在”。
   if (cwd.includes('\0') || requestedPath.includes('\0')) throw new RequestError(400, 'path is invalid')
+  const roots = Array.isArray(extraRoots) ? extraRoots.filter(root => typeof root === 'string' && root !== '') : []
   let root
   try {
     root = await realpath(cwd)
@@ -221,16 +260,20 @@ export async function resolveReadTarget(cwd, requestedPath) {
     throw new RequestError(404, 'workspace is not readable')
   }
   const candidate = resolve(root, requestedPath)
-  if (!inside(root, candidate)) throw new RequestError(403, 'path is outside the session workspace')
+  if (!inside(root, candidate) && !roots.some(extra => isSameOrInside(extra, candidate))) {
+    throw new RequestError(403, 'path is outside the session workspace')
+  }
   let filename
   try {
-    // 符号链接在这里解析：只有 realpath 之后仍在根内才放行，因此一个指向
-    // 工作区外的链接（或 Windows junction）无法读出根外内容。
+    // 符号链接在这里解析：只有 realpath 之后仍在根内（或授权的额外目录内）才
+    // 放行，因此一个指向其它位置的链接无法绕过围栏。
     filename = await realpath(candidate)
   } catch {
     throw new RequestError(404, 'file is not readable')
   }
-  if (!inside(root, filename)) throw new RequestError(403, 'resolved path is outside the session workspace')
+  if (!inside(root, filename) && !roots.some(extra => isSameOrInside(extra, filename))) {
+    throw new RequestError(403, 'resolved path is outside the session workspace')
+  }
   let info
   try {
     info = await stat(filename)
@@ -242,6 +285,221 @@ export async function resolveReadTarget(cwd, requestedPath) {
 }
 
 /**
+ * 把展示文件字节解码成文本；无法作为文本展示时返回 null。
+ *
+ * 识别 UTF-8 BOM 与 UTF-16 LE/BE BOM（记事本「Unicode」默认写 UTF-16LE）：
+ * 直接按字节里有没有 NUL 判二进制会把 UTF-16 文本误判成二进制，导致历史回放
+ * 无法展示文件内容。UTF-16 解码后仍含 NUL 的才视为二进制。
+ *
+ * @param {Buffer} bytes
+ * @returns {string|null}
+ */
+function decodeDisplayText(bytes) {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    const text = bytes.subarray(2).toString('utf16le')
+    return text.includes('\u0000') ? null : text
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const body = bytes.subarray(2)
+    const even = body.length - (body.length % 2)
+    const swapped = Buffer.allocUnsafe(even)
+    for (let index = 0; index < even; index += 2) {
+      swapped[index] = body[index + 1]
+      swapped[index + 1] = body[index]
+    }
+    const text = swapped.toString('utf16le')
+    return text.includes('\u0000') ? null : text
+  }
+  if (bytes.includes(0)) return null
+  const text = bytes.toString('utf8')
+  // 开头的 BOM 属于展示噪声；差异基准本身也是纯文本，去掉不留痕。
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
+// ---------------------------------------------------------------------------
+// 用户授权的额外可读目录（工作区外文件的历史回放）
+// ---------------------------------------------------------------------------
+
+/** DSH home：与 DSH 的 DSH_HOME 语义一致；测试可临时覆盖环境变量。 */
+function dshHomeDir() {
+  return typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME !== ''
+    ? process.env.DSH_HOME
+    : join(homedir(), '.dsh')
+}
+
+/** 授权目录清单文件（Host 侧持久化，不写 localStorage/不随浏览器清空）。 */
+function readRootsFilePath() {
+  return join(dshHomeDir(), 'dsh-inline-diff', 'read-roots.json')
+}
+
+/** 每个清单文件一份缓存：DSH_HOME 变化或 TTL 过期时重新读取。 */
+let readRootsCache = { key: '', at: 0, roots: [] }
+
+/**
+ * 校验并规范化一个用户输入的可读目录。
+ *
+ * 安全约束：必须是绝对路径、存在、是目录；拒绝文件系统根（`/`、`C:\`、UNC
+ * share 根），避免“加一个根 = 恢复任意文件读取”的误操作。符号链接按 realpath
+ * 落到真实目录后保存。
+ *
+ * @param {unknown} value
+ * @returns {Promise<string>} 规范绝对路径
+ */
+async function canonicalizeReadRoot(value) {
+  if (typeof value !== 'string') throw new RequestError(400, 'invalid root', 'invalid-root')
+  const trimmed = value.trim()
+  if (trimmed === '') throw new RequestError(400, 'invalid root', 'invalid-root')
+  if (trimmed.length > READ_ROOTS_PATH_MAX) throw new RequestError(400, 'invalid root', 'invalid-root')
+  if (/[\u0000-\u001f]/.test(trimmed)) throw new RequestError(400, 'invalid root', 'invalid-root')
+  if (!isAbsolute(trimmed)) throw new RequestError(400, 'root must be absolute', 'root-not-absolute')
+  let canonical
+  try {
+    canonical = await realpath(trimmed)
+  } catch {
+    throw new RequestError(400, 'root is not readable', 'root-not-readable')
+  }
+  let info
+  try {
+    info = await stat(canonical)
+  } catch {
+    throw new RequestError(400, 'root is not readable', 'root-not-readable')
+  }
+  if (!info.isDirectory()) throw new RequestError(400, 'root is not a directory', 'root-not-directory')
+  if (canonical === parse(canonical).root) {
+    throw new RequestError(400, 'filesystem root is not allowed', 'filesystem-root')
+  }
+  return canonical
+}
+
+/**
+ * 规范化一份目录清单：去重、最多 READ_ROOTS_MAX 条。
+ *
+ * @param {unknown} input
+ * @param {boolean} strict - true：POST 设置，遇到非法条目直接抛错；
+ *   false：读取持久化文件，跳过损坏/已不存在的条目，保留其余。
+ * @returns {Promise<string[]>}
+ */
+async function normalizeReadRoots(input, strict) {
+  if (!Array.isArray(input)) {
+    if (strict) throw new RequestError(400, 'roots must be an array', 'invalid-roots')
+    return []
+  }
+  if (input.length > READ_ROOTS_MAX && strict) {
+    throw new RequestError(400, 'too many roots', 'too-many-roots')
+  }
+  const roots = []
+  const seen = new Set()
+  for (const value of input.slice(0, READ_ROOTS_MAX)) {
+    let canonical
+    try {
+      canonical = await canonicalizeReadRoot(value)
+    } catch (error) {
+      if (strict) throw error
+      continue
+    }
+    const key = foldPathForPlatform(canonical)
+    if (seen.has(key)) continue
+    seen.add(key)
+    roots.push(canonical)
+  }
+  return roots
+}
+
+/** 读取当前授权目录；文件缺失/损坏时返回空数组（读取能力退回工作区围栏）。 */
+async function loadReadRoots() {
+  const file = readRootsFilePath()
+  if (readRootsCache.key === file && Date.now() - readRootsCache.at < READ_ROOTS_CACHE_TTL_MS) {
+    return readRootsCache.roots
+  }
+  let roots = []
+  try {
+    const data = JSON.parse(await readFile(file, 'utf8'))
+    roots = await normalizeReadRoots(data?.roots, false)
+  } catch {
+    roots = []
+  }
+  readRootsCache = { key: file, at: Date.now(), roots }
+  return roots
+}
+
+/** 原子地写入授权目录清单（先写临时文件再 rename），并刷新缓存。 */
+async function saveReadRoots(roots) {
+  const file = readRootsFilePath()
+  const temp = `${file}.tmp-${process.pid}-${Date.now()}`
+  try {
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(temp, `${JSON.stringify({ roots }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await rename(temp, file)
+  } catch {
+    throw new RequestError(500, 'read roots are not writable', 'read-roots-unwritable')
+  }
+  readRootsCache = { key: file, at: Date.now(), roots }
+}
+
+/**
+ * 请求的路径（解析 realpath 后）是否落在某个用户授权目录内。
+ * 用于 cwd 不是注册 workspace 时判断这次读取是否有明确授权。
+ */
+async function requestedPathInExtraRoots(cwd, requestedPath, roots) {
+  if (!Array.isArray(roots) || roots.length === 0) return false
+  if (typeof cwd !== 'string' || cwd === '' || typeof requestedPath !== 'string' || requestedPath === '') return false
+  let target
+  try {
+    target = await realpath(isAbsolute(requestedPath) ? requestedPath : resolve(cwd, requestedPath))
+  } catch {
+    return false
+  }
+  return roots.some(root => isSameOrInside(root, target))
+}
+
+/**
+ * 展示读取的根目录是否可信：必须等于某个已注册 workspace 的规范路径，或位于
+ * 它之下（会话 cwd 通常就是 workspace 根）。
+ *
+ * `/read` 的 `cwd` 来自浏览器请求；如果只按“调用方给的根”做 realpath 围栏，
+ * 任何同源脚本都能把根设成 `/` 或盘符根读取宿主可读的任意小文件（浏览器信任
+ * 边界挡不住同源第三方主题/插件）。这里用 DSH 的 `workspaceRegistry` 把读取
+ * 限定在用户真正打开过的工作区；registry 不存在（嵌入式/旧 profile）时保持
+ * 既有行为，避免破坏历史回放。
+ *
+ * @param {object} ctx - Host 插件 context。
+ * @param {string} cwd - 请求方给出的读取根。
+ * @returns {Promise<boolean>}
+ */
+async function readRootAllowed(ctx, cwd) {
+  let registry
+  try {
+    registry = typeof ctx?.get === 'function' ? ctx.get('workspaceRegistry') : undefined
+  } catch {
+    registry = undefined
+  }
+  if (registry === null || registry === undefined || typeof registry.list !== 'function') {
+    // 没有 workspace 服务：保持 1.4.1 之前的“调用方根 + realpath 围栏”行为。
+    return true
+  }
+  let canonical
+  try {
+    canonical = await realpath(cwd)
+  } catch {
+    return false
+  }
+  let workspaces
+  try {
+    workspaces = registry.list()
+  } catch {
+    // 服务存在但不可用：fail-closed，展示读取降级为差异块。
+    return false
+  }
+  if (!Array.isArray(workspaces)) return false
+  for (const workspace of workspaces) {
+    const root = workspace !== null && typeof workspace === 'object' ? workspace.path : undefined
+    if (typeof root !== 'string' || root === '') continue
+    if (isSameOrInside(root, canonical)) return true
+  }
+  return false
+}
+
+/**
  * 读取一个展示目标；用 `kind` 显式告诉浏览器如何降级。
  *
  * 读取带独立超时，并在读取后再次检查大小：文件在 stat 与 readFile 之间变大时，
@@ -250,8 +508,8 @@ export async function resolveReadTarget(cwd, requestedPath) {
  * @returns {Promise<{kind:'text', text:string, size:number} |
  *   {kind:'binary'|'oversized', size:number}>}
  */
-async function readDisplayTarget(cwd, requestedPath) {
-  const target = await resolveReadTarget(cwd, requestedPath)
+async function readDisplayTarget(cwd, requestedPath, extraRoots = []) {
+  const target = await resolveReadTarget(cwd, requestedPath, extraRoots)
   if (target.size > READ_CAP) return { kind: 'oversized', size: target.size }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS)
@@ -267,10 +525,8 @@ async function readDisplayTarget(cwd, requestedPath) {
     clearTimeout(timer)
   }
   if (bytes.length > READ_CAP) return { kind: 'oversized', size: bytes.length }
-  if (bytes.includes(0)) return { kind: 'binary', size: target.size }
-  let text = bytes.toString('utf8')
-  // 开头的 BOM 属于展示噪声；差异基准本身也是纯文本，去掉不留痕。
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
+  const text = decodeDisplayText(bytes)
+  if (text === null) return { kind: 'binary', size: target.size }
   return { kind: 'text', text, size: target.size }
 }
 
@@ -357,10 +613,29 @@ export function isTrustedHostRequest(req, bindHost, protocol = 'http:') {
   const loopback = isLoopbackHostname(hostUrl.hostname)
   const ownBind = hostUrl.hostname === bindHostname(bindHost)
   if (!loopback && !ownBind) return false
+  // DNS rebinding 的第二道：Host 写成 loopback 但 TCP 对端不是本机 → 拒绝。
+  // 回退围栏本来就在没有 connection 服务时使用；真实 Node 请求一定有 socket。
+  if (loopback) {
+    const peer = peerAddressOf(req)
+    if (peer !== undefined && !isLoopbackPeer(peer)) return false
+  }
   if (headerOf(headers, 'sec-fetch-site') === 'cross-site') return false
   const origin = headerOf(headers, 'origin')
   if (origin === undefined) return true
   return isSameAuthorityOrigin(origin, host)
+}
+
+/** 取 TCP 对端地址；单测的伪请求不一定有 socket。 */
+function peerAddressOf(req) {
+  const address = req !== null && typeof req === 'object' ? req.socket?.remoteAddress : undefined
+  return typeof address === 'string' && address !== '' ? address : undefined
+}
+
+/** 对端地址是否 loopback（兼容 IPv4-mapped IPv6 与带方括号的 ::1）。 */
+function isLoopbackPeer(address) {
+  if (typeof address !== 'string') return false
+  const value = address.toLowerCase().startsWith('::ffff:') ? address.slice(7) : address
+  return value === '::1' || isLoopbackHostname(value)
 }
 
 /** 读取一个 header 值（Node 已把名字转小写；单值字符串与数组首项都接受）。 */
@@ -636,10 +911,8 @@ function captureSnapshot(exec, result) {
 // 版本与更新（设置页自带的检查更新 / 更新 / 回退）
 // ---------------------------------------------------------------------------
 
-/** npm 包名（本插件自身）。 */
-const UPDATE_PACKAGE = '@him666233/dsh-inline-diff'
-/** npm registry 的 packument 地址（斜杠需编码，@scope 用 %2F）。 */
-const REGISTRY_URL = 'https://registry.npmjs.org/@him666233%2Fdsh-inline-diff'
+/** npm 包名兜底值：正常情况下从本目录的 package.json 读取，改名后无需改 Host 代码。 */
+const UPDATE_PACKAGE_FALLBACK = '@him666233/dsh-inline-diff'
 const UPDATE_FETCH_TIMEOUT_MS = 12_000
 const UPDATE_CACHE_TTL_MS = 60_000
 const UPDATE_INSTALL_TIMEOUT_MS = 240_000
@@ -677,6 +950,38 @@ async function currentPluginVersion() {
   return typeof manifest?.version === 'string' ? manifest.version : null
 }
 
+/** 进程级包名缓存；package.json 不可读时回退到发布包名。 */
+let packageNameCache = null
+
+/**
+ * 本插件自己的 npm 包名（唯一事实来源：本目录的 package.json）。
+ *
+ * `scripts/set-package-name.mjs` 会同步清单 / patch / client.js / README，但
+ * 不会改 Host 代码；如果这里写死旧包名，改名后「检查更新 / 安装」会去查旧包。
+ * 读不到清单时回退到发布包名，功能不中断。
+ *
+ * @returns {string}
+ */
+function updatePackageName() {
+  if (packageNameCache !== null) return packageNameCache
+  try {
+    const manifest = JSON.parse(readFileSync(join(selfDir(), 'package.json'), 'utf8'))
+    if (typeof manifest?.name === 'string' && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(manifest.name)) {
+      packageNameCache = manifest.name
+      return packageNameCache
+    }
+  } catch {
+    // 包清单缺失/损坏：回退兜底值，更新面板仍可显示（安装会失败并回滚）。
+  }
+  packageNameCache = UPDATE_PACKAGE_FALLBACK
+  return packageNameCache
+}
+
+/** npm registry 的 packument 地址（作用域斜杠编码为 %2F，@ 保留字面量）。 */
+function registryUrlOf(packageName) {
+  return `https://registry.npmjs.org/${packageName.startsWith('@') ? packageName.replace('/', '%2F') : packageName}`
+}
+
 /**
  * 当前 profile 的上下文。优先用 DSH 文档化的 profileContext 服务；取不到时
  * 回退解析 `--profile <name>` / DSH_PROFILE 环境变量（Web CLI 启动场景）。
@@ -702,8 +1007,10 @@ function profileContextOf(ctx) {
 
 /** 是否运行在桌面 Electron 宿主里（桌面端 v1 只读展示 + 手动命令）。 */
 function isDesktopHost() {
-  return process.versions?.electron !== undefined
-    || (Array.isArray(process.argv) && process.argv.some(value => String(value).includes('dsh-desktop-host')))
+  if (process.versions?.electron !== undefined) return true
+  // 只匹配独立路径段，避免工作区里恰好含 dsh-desktop-host 字样的路径误命中。
+  return Array.isArray(process.argv)
+    && process.argv.some(value => /(^|[\\/])dsh-desktop-host([\\/]|$)/.test(String(value)))
 }
 
 /** semver 解析；非 semver 返回 null。 */
@@ -781,7 +1088,7 @@ async function fetchRegistryVersions(force) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS)
   try {
-    const response = await fetch(REGISTRY_URL, {
+    const response = await fetch(registryUrlOf(updatePackageName()), {
       headers: { accept: 'application/json' },
       signal: controller.signal,
     })
@@ -819,11 +1126,11 @@ function installerInfo(pc) {
     && /[\\/]node_modules[\\/]@deepseek-ai[\\/]dsh[\\/]package\.json$/.test(anchor)
   const cliRoot = anchorLooksExpected ? dirname(anchor) : null
   const cliBin = cliRoot === null ? null : join(cliRoot, 'lib', 'bin.js')
-  const command = `dsh plugin --profile ${name} add ${UPDATE_PACKAGE}@<version>`
+  const command = `dsh plugin --profile ${name} add ${updatePackageName()}@<version>`
   if (isDesktopHost()) {
     return { mode: 'manual', platform: 'desktop', command, cliBin: null, reason: 'desktop-requires-exit' }
   }
-  if (cliBin === null || !isAbsolute(cliBin)) {
+  if (cliBin === null || !isAbsolute(cliBin) || !existsSync(cliBin)) {
     return { mode: 'manual', platform: 'web', command, cliBin: null, reason: 'cli-not-found' }
   }
   return { mode: 'cli', platform: 'web', command, cliBin, reason: null }
@@ -832,7 +1139,7 @@ function installerInfo(pc) {
 /** 读取 profile 里已安装的插件版本；读不到返回 null。 */
 async function installedVersionAt(pc) {
   if (pc === null || typeof pc.dir !== 'string') return null
-  const manifest = await readJsonSafe(join(pc.dir, 'node_modules', UPDATE_PACKAGE, 'package.json'))
+  const manifest = await readJsonSafe(join(pc.dir, 'node_modules', updatePackageName(), 'package.json'))
   return typeof manifest?.version === 'string' ? manifest.version : null
 }
 
@@ -846,7 +1153,7 @@ async function dshVersionAt(pc) {
 /** 在子进程里跑官方 CLI 的 plugin add；返回结构化结果（含日志尾部）。 */
 function runPluginInstall(pc, version, installer) {
   return new Promise((resolveResult) => {
-    const spec = `${UPDATE_PACKAGE}@${version}`
+    const spec = `${updatePackageName()}@${version}`
     const command = `dsh plugin --profile ${pc.name} add ${spec}`
     const args = [installer.cliBin, 'plugin', '--profile', pc.name, 'add', spec]
     if (typeof installer.cliBin !== 'string' || !isAbsolute(installer.cliBin) || !PROFILE_NAME_PATTERN.test(pc.name)) {
@@ -860,6 +1167,9 @@ function runPluginInstall(pc, version, installer) {
         windowsHide: true,
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
+        // POSIX：让 CLI 自成一个进程组，超时时可以整组 SIGKILL；否则 pnpm 的
+        // 孙进程会留在机器上（Windows 走 taskkill /T，见下面的超时分支）。
+        detached: process.platform !== 'win32',
       })
     } catch (error) {
       resolveResult({ ok: false, code: 'spawn-failed', command, logTail: String(error?.message ?? '') })
@@ -885,9 +1195,16 @@ function runPluginInstall(pc, version, installer) {
       try {
         if (process.platform === 'win32') {
           // npm/pnpm 会拉起子进程树：只 kill 父进程会留下孤儿，因此用 taskkill /T。
-          spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }).on('error', () => {})
+          // spawn 失败时 pid 可能缺失，不能把 "undefined" 传给 taskkill。
+          if (Number.isInteger(child.pid)) spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }).on('error', () => {})
         } else {
-          child.kill('SIGKILL')
+          // 子进程在独立进程组里（detached），负 pid 杀整组；失败再退回只杀直接子进程。
+          try {
+            if (Number.isInteger(child.pid)) process.kill(-child.pid, 'SIGKILL')
+            else child.kill('SIGKILL')
+          } catch {
+            child.kill('SIGKILL')
+          }
         }
       } catch {
         // 尽力而为：超时返回状态仍然明确。
@@ -964,6 +1281,72 @@ async function performUpdate(ctx, body) {
 }
 
 // ---------------------------------------------------------------------------
+// 工具清单（第三方工具兼容）
+// ---------------------------------------------------------------------------
+
+/**
+ * 每个插件 ctx 一份 `/tools` 应答缓存：工具注册/卸载（`tools/change`）时失效。
+ *
+ * 为什么要 Host 半侧提供清单：浏览器半侧的 keyed `tool.call.toolview` 只能按
+ * wire 工具名注册视图，DSH 自己只认识内建工具；第三方插件（dsh-ssh、MCP 等）
+ * 注册的工具名客户端无从得知，只能由 Host 从 `tools.definitions()` 导出。
+ * 该路由只读、不落盘、不包含参数或结果。
+ */
+const toolNamesByContext = new WeakMap()
+
+/** 取当前进程的 tools 服务；不同 profile/嵌入式宿主缺失时返回 undefined。 */
+function toolsServiceOf(ctx) {
+  try {
+    if (ctx !== null && typeof ctx === 'object' && typeof ctx.get === 'function') {
+      const service = ctx.get('tools')
+      if (service !== null && typeof service === 'object') return service
+    }
+  } catch {
+    // 版本漂移 / 服务尚未就绪：按“没有工具清单”处理，客户端继续用内建清单。
+  }
+  return undefined
+}
+
+/**
+ * 当前可见工具的 wire 名（去重、排序、有界）。任何异常都返回空数组，绝不让
+ * 一个展示型路由把 Host 的 tools 服务拖进错误路径。
+ *
+ * 只读取**全局可见**定义；注册在某个 agent scope 里的工具不在其中（少数实验
+ * 插件会这样做），那些工具仍走官方通用行。
+ */
+export function visibleToolNames(ctx) {
+  if (ctx !== null && typeof ctx === 'object' && toolNamesByContext.has(ctx)) return toolNamesByContext.get(ctx)
+  const names = []
+  const tools = toolsServiceOf(ctx)
+  // 服务尚未就绪时不缓存空结果：之后挂载 tools 服务的宿主仍能拿到真实清单。
+  if (tools === undefined) return []
+  try {
+    let definitions
+    if (typeof tools.definitions === 'function') definitions = tools.definitions()
+    else if (typeof tools.schemas === 'function') definitions = tools.schemas()
+    if (Array.isArray(definitions)) {
+      for (const definition of definitions) {
+        const name = definition !== null && typeof definition === 'object' ? definition.name : undefined
+        if (typeof name !== 'string' || name === '' || name.length > MAX_TOOL_NAME_LENGTH) continue
+        names.push(name)
+        if (names.length >= MAX_TOOL_NAMES) break
+      }
+    }
+  } catch {
+    return []
+  }
+  names.sort()
+  const unique = [...new Set(names)]
+  if (ctx !== null && typeof ctx === 'object') toolNamesByContext.set(ctx, unique)
+  return unique
+}
+
+/** 工具注册表变化时丢弃缓存，下一次 `/tools` 重新读取。 */
+export function invalidateToolNames(ctx) {
+  if (ctx !== null && typeof ctx === 'object') toolNamesByContext.delete(ctx)
+}
+
+// ---------------------------------------------------------------------------
 // 路由处理
 // ---------------------------------------------------------------------------
 
@@ -984,6 +1367,17 @@ async function handleRequest(ctx, req, res) {
       respond(res, 200, { ok: true, snapshots: snapshots.size })
       return
     }
+    if (req.method === 'GET' && route === API_PREFIX + '/tools') {
+      // 第三方工具兼容：浏览器半侧按这份清单为“官方没有视图”的工具名注册
+      // 展开风格行。只回工具名，不回 schema、参数或结果。
+      respond(res, 200, { ok: true, tools: visibleToolNames(ctx) })
+      return
+    }
+    if (req.method === 'GET' && route === API_PREFIX + '/read-roots') {
+      // 用户显式授权的工作区外可读目录；设置页读取当前清单。
+      respond(res, 200, { ok: true, roots: await loadReadRoots(), max: READ_ROOTS_MAX })
+      return
+    }
     if (req.method === 'GET' && route === API_PREFIX + '/update/versions') {
       const refresh = /[?&]refresh=1(?:&|$)/.test(String(req?.url ?? ''))
       try {
@@ -999,7 +1393,7 @@ async function handleRequest(ctx, req, res) {
     }
     // 2. 先认 action 再读 body：未知路径不消耗解析预算。
     const action = actionOf(route)
-    if (action !== 'snapshot' && action !== 'read' && action !== 'update/install') {
+    if (action !== 'snapshot' && action !== 'read' && action !== 'update/install' && action !== 'read-roots') {
       fail(res, 404, 'unknown action')
       return
     }
@@ -1010,6 +1404,18 @@ async function handleRequest(ctx, req, res) {
       return
     }
     const body = await readJsonBody(req, res)
+    if (action === 'read-roots') {
+      try {
+        const roots = await normalizeReadRoots(body.roots, true)
+        await saveReadRoots(roots)
+        respond(res, 200, { ok: true, roots })
+      } catch (error) {
+        const code = error instanceof RequestError && typeof error.code === 'string' ? error.code : 'invalid-roots'
+        // 设置页按稳定 code 显示本地化文案；不把 fs 错误/绝对路径回给浏览器。
+        respond(res, error instanceof RequestError && error.status === 500 ? 500 : 400, { ok: false, code })
+      }
+      return
+    }
     if (action === 'update/install') {
       const result = await performUpdate(ctx, body)
       respond(res, result.status, result.payload)
@@ -1034,12 +1440,19 @@ async function handleRequest(ctx, req, res) {
       respond(res, 200, { ok: true, snapshot: getSnapshot(key) })
       return
     }
-    if (body.cwd !== undefined && typeof body.cwd !== 'string') {
+    if (typeof body.cwd !== 'string' || body.cwd === '') {
       fail(res, 400, 'cwd is required')
       return
     }
-    if (body.path !== undefined && typeof body.path !== 'string') {
+    if (typeof body.path !== 'string' || body.path === '') {
       fail(res, 400, 'path is required')
+      return
+    }
+    // 只允许读用户真正打开过的工作区（或其子目录），或用户显式授权的额外目录；
+    // 同源脚本不能把根设成盘符根/`/` 来读取宿主任意文件。
+    const extraRoots = await loadReadRoots()
+    if (!(await readRootAllowed(ctx, body.cwd)) && !(await requestedPathInExtraRoots(body.cwd, body.path, extraRoots))) {
+      fail(res, 403, 'workspace is not registered')
       return
     }
     if (activeReads >= MAX_CONCURRENT_READS) {
@@ -1049,7 +1462,7 @@ async function handleRequest(ctx, req, res) {
     }
     activeReads++
     try {
-      const result = await readDisplayTarget(body.cwd, body.path)
+      const result = await readDisplayTarget(body.cwd, body.path, extraRoots)
       respond(res, 200, { ok: true, ...result })
     } finally {
       activeReads--
@@ -1078,6 +1491,12 @@ export function apply(ctx) {
   ctx.effect(() => ctx.on('tools/result', (exec, result) => {
     captureSnapshot(exec, result)
   }), 'dsh-inline-diff: capture mutation snapshots')
+
+  // 工具注册表变化（插件挂载/卸载、MCP 工具刷新）→ 丢弃 `/tools` 缓存，
+  // 下一次请求即可看到新工具。事件没有负载，只用来失效。
+  ctx.effect(() => ctx.on('tools/change', () => {
+    invalidateToolNames(ctx)
+  }), 'dsh-inline-diff: tool list cache')
 
   // 同源展示 API。每个路由条目都是 effect 持有的资源（dispose 时自动注销）。
   ctx.effect(() => ctx.webServer.register({

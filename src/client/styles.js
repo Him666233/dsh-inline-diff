@@ -134,7 +134,11 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
 }
 /* ---- 增强风格平铺命令执行行（bash / pwsh / win_bash） ---- */
 .enhanced-tool {
-  --enhanced-mono: var(--dsw-font-markdown-code-block-small, 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  /* 代码字体只取“字体族”token：--dsw-font-markdown-code-block-small 是 font 简写
+     （字号/行高/字族），直接当 font-family 用会得到非法值并回退宿主正文字体。
+     DSH 主题在 body 上提供 --ds-font-family-code，:root 上提供
+     --dsh-font-family-code-default 作为内置字体栈兜底。 */
+  --enhanced-mono: var(--ds-font-family-code, var(--dsh-font-family-code-default, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace));
   display: flex;
   flex-direction: column;
   /* 头部与 IO 面板之间不留 gap：IN 状态条必须直接顶到标题条，中间不能有空白带。
@@ -533,7 +537,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   .did-settings-scroll { padding: 12px 10px 14px 16px; }
 }
 .did-card {
-  --did-mono: var(--dsw-font-markdown-code-block-small, 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --did-mono: var(--ds-font-family-code, var(--dsh-font-family-code-default, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace));
   --did-inset-x: 9px;
   display: flex;
   flex-direction: column;
@@ -812,7 +816,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   padding: 0 5px;
   border: 0.5px solid currentColor;
   border-radius: 999px;
-  font-family: var(--dsh-content-font-family, system-ui, sans-serif);
+  font-family: var(--dsw-font-family, system-ui, sans-serif);
   font-size: 10px;
   line-height: 14px;
   white-space: nowrap;
@@ -1029,7 +1033,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   border: 0.5px solid var(--did-border-2);
   border-radius: 999px;
   color: var(--did-fg-tertiary);
-  font-family: var(--enhanced-mono, var(--dsw-font-markdown-code-block-small, ui-monospace, monospace));
+  font-family: var(--enhanced-mono, var(--ds-font-family-code, ui-monospace, monospace));
   font-size: 10.5px;
   line-height: 16px;
   white-space: nowrap;
@@ -1045,7 +1049,7 @@ body[data-dsh-inline-diff-appearance='light'] [data-shell-tone='light'] {
   grid-template-columns: 2.7em minmax(0, 1fr) auto;
   min-width: 0;
   padding: 0 var(--did-inset-x) 0 14px;
-  font-family: var(--did-mono, 12px/18px ui-monospace, monospace);
+  font-family: var(--did-mono, var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace));
   font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px);
   line-height: 18px;
   border-left: 0.5px solid transparent;
@@ -1916,6 +1920,95 @@ body[data-dsh-inline-diff-appearance='dark'] [data-shell-tone='light'] .did-zoom
   .did-dialog[data-enter] {
     animation: did-dialog-enter 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
+}
+
+/* 常驻呼吸动画（状态点 / IN-OUT 色条）也遵循「减少动效」：只保留静态颜色，
+   不脉冲。入场/输出动画已由上面的 no-preference 媒体查询整体关闭。 */
+@media (prefers-reduced-motion: reduce) {
+  .enhanced-tool[data-state='running'] .enhanced-dot,
+  .enhanced-tool[data-state='preparing'] .enhanced-dot,
+  .enhanced-section[data-state='running'],
+  .enhanced-section[data-state='preparing'],
+  .did-state[data-state='running'] .did-dot,
+  .did-state[data-state='preparing'] .did-dot {
+    animation: none;
+  }
+}
+
+/* ---- 设置页：额外可读目录 ----------------------------------------------- */
+.did-readroots {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 0.5px solid var(--did-border-1);
+}
+.did-readroots-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.did-readroots-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0.5px solid var(--did-border-2);
+  border-radius: 8px;
+  background: var(--did-surface-2);
+  color: var(--did-fg-primary);
+  font-family: var(--ds-font-family-code, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+.did-readroots-input::placeholder { color: var(--did-fg-tertiary); }
+.did-readroots-input:focus-visible {
+  outline: 1px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+.did-readroots-button {
+  flex: none;
+  padding: 5px 10px;
+  border: 0.5px solid var(--did-border-2);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent);
+  color: var(--did-fg-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.did-readroots-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent);
+}
+.did-readroots-button:disabled { opacity: 0.5; cursor: default; }
+.did-readroots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+.did-readroots-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 0.5px solid var(--did-border-1);
+  border-radius: 6px;
+  background: var(--did-io-bg);
+}
+.did-readroots-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--did-fg-secondary);
+  font-family: var(--ds-font-family-code, ui-monospace, monospace);
+  font-size: 11px;
+}
+.did-readroots-empty {
+  padding: 2px 1px;
+  color: var(--did-fg-tertiary);
+  font-size: 11px;
+}
+.did-readroots-ok {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--dsw-alias-state-success-primary);
 }
 
 /* ---- 设置页：版本与更新面板 --------------------------------------------- */

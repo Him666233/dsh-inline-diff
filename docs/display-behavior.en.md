@@ -30,6 +30,7 @@ This document explains how inline diff cards and the “Expand / Whole file” d
   - the expanded dialog shows a **fixed notice banner** at the top, and the “Whole file” tab is greyed out;
   - in this case the card's first render additionally reads the **current file** once (read cache 15 seconds; requires the tool result to carry a file path), and uses it only to **fill in line numbers** — it never gains whole-file comparison that way.
 - Line-number location is also based on the current file: if the file has changed since and the hunk cannot be located uniquely, the line numbers show “line numbers pending”, and the dialog explains the same. Deletion-only hunks may also fail to locate when the file offers too few context anchors.
+- Files outside the workspace: live edit cards still use the execution snapshot and show the full diff; history replay needs to read the current file to fill in line numbers, but the Host `/read` route only serves paths inside the session workspace (plus explicitly authorized extra folders), so such files stop at the tool-metadata changed hunks (line numbers pending, whole-file comparison unavailable). `str_replace_editor` never keeps a snapshot and also shows only the changed hunks. Add the containing folder under “Extra readable folders (outside workspace)” in the settings page to restore them.
 
 ## 4. The line-number gutter: OLD / NEW
 
@@ -64,6 +65,7 @@ The dialog is sized `min(1440px, 96vw) × min(900px, 90vh)`, is mounted to `docu
 ## 7. IN / OUT on expanded-style cards
 
 - Command and tool-call cards internally consist of **two segments, IN / OUT**, each with its own scroll area (IN capped at 180px, OUT capped at 260px); scrollbars hug the card's right edge (matching file-change cards), and text padding is kept by the scroll container itself so it is never pressed by the scrollbar.
+- Third-party tools (such as dsh-ssh's `ssh_*` and MCP-bridged tools) that are globally visible in the Host and have no view of their own follow the same rules in this section: the same IN/OUT layout, the same “Other tool calls” shell/inner tones and UI language, and the same motion; tools that ship their own view are left untouched by this plugin.
 - The left color bar shows status per segment, as a roughly 2.5px left stroke per segment: input preparing / awaiting output = theme color (pulsing), input side completed = green, input side failed = red; output running = theme color (pulsing, with a “Running…” placeholder), output succeeded = green, execution failed / non-zero exit = red, user aborted = warning color; when the input side fails, the OUT segment is marked “Skipped” and keeps a neutral color.
 - Failure attribution: `INVALID_ARGS` / `UNKNOWN_TOOL` / `ABORTED_BEFORE_DISPATCH` go to the input side; all other execution-time errors, non-zero exit codes, and signal termination go to the output side; when the error code is missing, raw arguments that are not a valid JSON object also count as the input side. On input-side failures the IN code turns red, and on output-side failures the OUT code turns red; normal text uses the default foreground color that follows the inner tone and light/dark appearance. Failure text appears only in the corresponding IN / OUT segment, and the card ends at the IO panel without appending another repeated error line or an extra shell band below it.
 - The status dot is green only when **both input and output succeed**; red when either side fails; warning color on user abort; theme color and pulsing while running/preparing.
@@ -81,7 +83,7 @@ The dialog is sized `min(1440px, 96vw) × min(900px, 90vh)`, is mounted to `docu
 
 ## 9. Privacy
 
-- By default no network requests, no telemetry; snapshots are kept only briefly in Host memory and never persisted; settings are written only to the browser's `localStorage` and contain no file contents.
+- By default no network requests, no telemetry; snapshots are kept only briefly in Host memory and never persisted; settings are written only to the browser's `localStorage` and contain no file contents. The Host's `/dsh-inline-diff/api/tools` returns only currently visible tool names locally — no arguments or results — and never touches the network.
 - Exception: when the user explicitly clicks “Check for updates / Install”, the Host fetches npm registry metadata and invokes the local `dsh` CLI to install the plugin. Those requests contain only the package name/version — never session content, file content, keys or device information — and nothing runs in the background automatically.
 
 ## 10. Motion

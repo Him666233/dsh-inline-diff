@@ -99,7 +99,10 @@ function summaryOf(args, call) {
   if (args === null || typeof args !== 'object') return ''
   const specific = call === undefined ? '' : searchSummary(call)
   if (specific !== '') return specific
-  const keys = ['description', 'command', 'file_path', 'path', 'url', 'query', 'queries', 'prompt', 'objective', 'skill', 'title', 'name', 'tool']
+  const keys = [
+    'description', 'command', 'file_path', 'path', 'localPath', 'remotePath',
+    'url', 'query', 'queries', 'prompt', 'objective', 'skill', 'title', 'name', 'tool', 'alias',
+  ]
   for (const key of keys) {
     const value = args[key]
     if (Array.isArray(value)) {
